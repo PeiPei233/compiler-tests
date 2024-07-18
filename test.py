@@ -226,6 +226,7 @@ if __name__ == "__main__":
         for lab in ["lab1", "lab2", "lab3", "lab4"]:
             test_results = test_lab(input_file, lab)
             summary(test_results)
+            print()
     else:
         test_results = test_lab(input_file, lab)
         summary(test_results)
