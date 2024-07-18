@@ -5,12 +5,15 @@ import subprocess
 import datetime
 from tempfile import NamedTemporaryFile
 from dataclasses import dataclass
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ### Settings ###
 
+TEST_FOLDER = os.path.dirname(__file__)
 TIMEOUT = 10
-IR_PATH = "./ir.py"
-VENUS_JAR = "./venus.jar"
+IR_PATH = os.path.join(TEST_FOLDER, "ir.py")
+VENUS_JAR = os.path.join(TEST_FOLDER, "venus.jar")
 PYTHON_PATH = sys.executable  # always use the current python
 JAVA_PATH = "java"
 
@@ -109,7 +112,7 @@ def run_one_test(compiler: str, test: Test, lab: str) -> TestResult:
         assert test.expected is not None, f"Error: {test.filename} has no expected output."
         try:
             result = subprocess.run(
-                [compiler, test.filename, ir_file.name],
+                [compiler, test.filename, ir_file.name, '--ir'],  # add --ir flag
                 capture_output=True,
                 timeout=TIMEOUT)
             if result.returncode != 0:  # compile error
@@ -117,6 +120,7 @@ def run_one_test(compiler: str, test: Test, lab: str) -> TestResult:
             with subprocess.Popen([PYTHON_PATH, IR_PATH, "-t", ir_file.name],
                                   stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE,
                                   text=True) as p:
                 try:
                     if test.inputs is not None:
@@ -175,11 +179,11 @@ def run_one_test(compiler: str, test: Test, lab: str) -> TestResult:
 
 def summary(test_results: list[TestResult]):
     # get the longest filename
-    max_filename = max([len(test_result.test.filename)
+    max_filename = max([len(Path(test_result.test.filename).relative_to(TEST_FOLDER).as_posix())
                         for test_result in test_results])
     for test_result in test_results:
         # align the filename
-        print(f"{test_result.test.filename.ljust(max_filename)}  ", end="")
+        print(f"{Path(test_result.test.filename).relative_to(TEST_FOLDER).as_posix().ljust(max_filename)}  ", end="")
         print(f"{green('PASSED') if test_result.passed else red('FAILED')}")
     passed = len([test for test in test_results if test.passed])
     print()
@@ -191,23 +195,38 @@ def summary(test_results: list[TestResult]):
 
 def test_lab(compiler: str, lab: str) -> list[TestResult]:
     print(box(f"Running {lab} test..."))
-    tests = os.listdir(f"tests/{lab}")
-    tests = filter(lambda x: x.endswith(".sy"), tests)  # only test .sy files
-    tests = [Test.parse_file(f"tests/{lab}/{test}") for test in tests]
-    test_results = [run_one_test(compiler, test, lab) for test in tests]
+    tests = list((Path(TEST_FOLDER) / "tests" / lab).glob("*.sy"))
+    tests = [Test.parse_file(str(test)) for test in tests]
+    # test_results = [run_one_test(compiler, test, lab) for test in tests]
+
+    test_results = []
+    with ThreadPoolExecutor() as executor:
+        future_to_test = {executor.submit(run_one_test, compiler, test, lab): test for test in tests}
+        for future in as_completed(future_to_test):
+            try:
+                result = future.result()
+                test_results.append(result)
+            except Exception as e:
+                print(f"Test {future_to_test[future]} generated an exception: {e}")
+
     return test_results
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test your compiler.")
     parser.add_argument("input_file", type=str, help="Your complier file")
-    parser.add_argument("lab", type=str, help="Which lab to test",
-                        choices=["lab1", "lab2", "lab3", "lab4"])
+    parser.add_argument("lab", type=str, help="Which lab to test", choices=["lab1", "lab2", "lab3", "lab4"], nargs='?')
     args = parser.parse_args()
     input_file, lab = args.input_file, args.lab
     if not os.path.exists(input_file):
         print(f"File {input_file} not found.")
         exit(1)
-    test_results = test_lab(input_file, lab)
-    summary(test_results)
+    if lab not in ["lab1", "lab2", "lab3", "lab4"]:
+        # test all labs
+        for lab in ["lab1", "lab2", "lab3", "lab4"]:
+            test_results = test_lab(input_file, lab)
+            summary(test_results)
+    else:
+        test_results = test_lab(input_file, lab)
+        summary(test_results)
     print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
