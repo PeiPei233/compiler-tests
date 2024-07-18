@@ -215,7 +215,7 @@ def test_lab(compiler: str, lab: str) -> list[TestResult]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test your compiler.")
     parser.add_argument("input_file", type=str, help="Your complier file")
-    parser.add_argument("lab", type=str, help="Which lab to test", choices=["lab1", "lab2", "lab3", "lab4"], nargs='?')
+    parser.add_argument("lab", type=str, help="Which lab to test", nargs='?')
     args = parser.parse_args()
     input_file, lab = args.input_file, args.lab
     if not os.path.exists(input_file):
