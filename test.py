@@ -14,6 +14,7 @@ TEST_FOLDER = os.path.dirname(__file__)
 TIMEOUT = 10
 IR_PATH = os.path.join(TEST_FOLDER, "ir.py")
 VENUS_JAR = os.path.join(TEST_FOLDER, "venus.jar")
+COVERAGE_PATH = os.path.join(TEST_FOLDER, "coverage.py")
 PYTHON_PATH = sys.executable  # always use the current python
 JAVA_PATH = "java"
 
@@ -120,7 +121,7 @@ def run_one_test(compiler: str, test: Test, lab: str) -> TestResult:
             with subprocess.Popen([PYTHON_PATH, IR_PATH, "-t", ir_file.name],
                                   stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
+                                #   stderr=subprocess.PIPE,
                                   text=True) as p:
                 try:
                     if test.inputs is not None:
@@ -211,23 +212,39 @@ def test_lab(compiler: str, lab: str) -> list[TestResult]:
 
     return test_results
 
+def test_coverage(tests_folder: Path):
+    print(box(f"Running lab0 test..."))
+    tests_file = [tests_folder / f"testfile{i}.sy" for i in range(1, 6)]
+    input_file = [tests_folder / f"input{i}.txt" for i in range(1, 6)]
+    output_file = [tests_folder / f"output{i}.txt" for i in range(1, 6)]
+    try:
+        result = subprocess.run(
+            [PYTHON_PATH, COVERAGE_PATH, *map(str, tests_file)],
+            capture_output=True,
+            text=True)
+        print(result.stdout)
+    except:
+        print(red(f"Error: lab0 test failed."))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test your compiler.")
-    parser.add_argument("input_file", type=str, help="Your complier file")
-    parser.add_argument("lab", type=str, help="Which lab to test", nargs='?')
+    parser.add_argument("lab", type=str, help="Which lab to test",
+                            choices=["lab0", "lab1", "lab2", "lab3", "lab4"])
+    parser.add_argument("source", type=str, help="Path to your repository.")
     args = parser.parse_args()
-    input_file, lab = args.input_file, args.lab
-    if not os.path.exists(input_file):
-        print(f"File {input_file} not found.")
-        exit(1)
-    if lab not in ["lab1", "lab2", "lab3", "lab4"]:
-        # test all labs
-        for lab in ["lab1", "lab2", "lab3", "lab4"]:
-            test_results = test_lab(input_file, lab)
-            summary(test_results)
-            print()
+    source, lab = args.source, args.lab
+    if lab == 'lab0':
+        if not (Path(source) / "tests").exists():
+            print(red(f"Error: your custom tests not found."))
+            exit(1)
+        test_coverage((Path(source) / "tests"))
     else:
-        test_results = test_lab(input_file, lab)
+        compiler_path = os.path.join(source, "compiler")
+        if not os.path.exists(compiler_path):
+            print(f"File {compiler_path} not found.")
+            exit(1)
+        test_results = test_lab(compiler_path, lab)
         summary(test_results)
+        if not (Path(source) / "reports" / f"{lab}.pdf").exists():
+            print(red(f"Error: reports/{lab}.pdf not found."))
     print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

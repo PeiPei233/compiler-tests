@@ -103,27 +103,49 @@ class Unary(IRNode):
 class Store(IRNode):
     """
     Store is a special IRNode for storing a value to a pointer.
-    *x = y
+    *(x + #k) = y
     """
 
     left: Token
+    offset: int
     right: Token
 
+    def __init__(self, *args: Token):
+        if len(args) == 3:
+            self.left, offset, self.right = args
+            self.offset = int(offset.value)
+        elif len(args) == 2:
+            self.left, self.right = args
+            self.offset = 0
+
     def __str__(self) -> str:
-        return f"*{self.left} := {self.right}"
+        if self.offset == 0:
+            return f"*{self.left} := {self.right}"
+        return f"*({self.left} + #{self.offset}) := {self.right}"
 
 
 @dataclass
 class Deref(IRNode):
     """
-    x = *y
+    x = *(y + #k)
     """
 
     left: Token
     right: Token
+    offset: int
+
+    def __init__(self, *args: Token):
+        if len(args) == 3:
+            self.left, self.right, offset = args
+            self.offset = int(offset.value)
+        elif len(args) == 2:
+            self.left, self.right = args
+            self.offset = 0
 
     def __str__(self) -> str:
-        return f"{self.left} := *{self.right}"
+        if self.offset == 0:
+            return f"{self.left} := *{self.right}"
+        return f"{self.left} := *({self.right} + #{self.offset})"
 
 
 @dataclass
@@ -329,7 +351,9 @@ start: instruction*
     | "IF" NAME relop NAME "GOTO" NAME -> if
     | NAME "=" NAME -> assign
     | NAME "=" unop NAME -> unary
+    | "*" "(" NAME "+" "#" SIGNED_INT ")" "=" NAME -> store
     | "*" NAME "=" NAME -> store
+    | NAME "=" "*" "(" NAME "+" "#" SIGNED_INT ")" -> deref
     | NAME "=" "*" NAME -> deref
     | NAME "=" NAME binop NAME -> binary
     | NAME "=" NAME binop "#" SIGNED_INT -> binaryi
@@ -404,7 +428,7 @@ class Environment:
         for k, v in self.env.items():
             print(f"{k}: {v}")
 
-    def __getitem__(self, key: str):
+    def __getitem__(self, key: str) -> int | FunctionFrame:
         if key in self.env.keys():
             return self.env[key]
         else:
@@ -416,23 +440,23 @@ class Environment:
     def __setitem__(self, key: str, value: int | FunctionFrame) -> None:
         self.env[key] = value
 
-    def load(self, address: Token) -> int:
+    def load(self, address: int) -> int:
         """ Load value from address
         always find in global env
         """
 
-        value = self[address]
         for array in global_env.arrays:
-            if array.contain(value):
-                return array.get(value)
+            if array.contain(address):
+                return array.get(address)
         raise ValueError(f"address {address} not found in load")
 
-    def store(self, address: Token, src: Token) -> None:
+    def store(self, address: int, src: Token) -> None:
         """ Store value to address"""
-        value = self[address]
+        value = self[src]
+        assert isinstance(value, int), f"Value {value} is not an integer."
         for array in global_env.arrays:
-            if array.contain(value):
-                array.set(value, self[src])
+            if array.contain(address):
+                array.set(address, value)
                 return
         raise ValueError(f"address {address} not found in store")
 
@@ -499,7 +523,7 @@ class FunctionFrame:
         new_frame.labels = self.labels
         return new_frame
 
-    def run(self, params: list[int] = []):
+    def run(self, params: list[int] = []) -> int | None:
         """ Run the function with given params. """
         # current pc
         pc = 0
@@ -546,7 +570,9 @@ class FunctionFrame:
                 case Return(src):
                     if src is None:  # void return
                         return None
-                    return env[src]
+                    value = env[src]
+                    assert isinstance(value, int), f"Value {value} is not an integer."
+                    return value
                 case Arg(src):
                     args.append(env[src])
                 case Param(dst):  # get the param from the stack
@@ -563,9 +589,14 @@ class FunctionFrame:
                         print(args[0])
                         args = []  # reset args
                     else:
-                        res = env[name].new().run(args)
+                        func_frame = env[name]
+                        assert isinstance(func_frame, FunctionFrame), f"{func_frame} is not a function."
+                        res = func_frame.new().run(args)
                         if dst is not None:
-                            env[dst] = res
+                            if res is not None:
+                                env[dst] = res
+                            else:
+                                env[dst] = random.randint(1, 0xffff)
                         args = []  # reset args
                 case If(left, op, right, label):
                     if op in op2func.keys():
@@ -576,10 +607,14 @@ class FunctionFrame:
                             f"{op} in relop is not implemented.")
                 case Dec(dst, size):
                     env[dst] = Array.new(size)
-                case Store(dst, src):  # * x = y
-                    env.store(dst, src)
-                case Deref(dst, src):  # x = * y
-                    value = env.load(src)
+                case Store(dst, offset, src):  # * ( x + # k ) = y
+                    address = env[dst]
+                    assert isinstance(address, int), f"Address {address} is not an integer."
+                    env.store(address + offset, src)
+                case Deref(dst, src, offset):  # x = * ( y + # k )
+                    address = env[src]
+                    assert isinstance(address, int), f"Address {address} is not an integer."
+                    value = env.load(address + offset)
                     env[dst] = value
                 case La(dst, label):
                     if label not in global_env.labels:
@@ -654,6 +689,7 @@ def run(irs: list[IRNode]):
     if "main" not in global_env.env.keys():
         raise SyntaxError("No main function.")
     main = global_env["main"]
+    assert isinstance(main, FunctionFrame), "Main is not a function."
     return_value = main.run()
     return return_value
 
