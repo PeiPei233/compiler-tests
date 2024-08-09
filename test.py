@@ -1,13 +1,14 @@
+import atexit
 import sys
 import os
 import argparse
 import subprocess
 import datetime
 import shutil
+import tempfile
 import time
 import re
 from enum import Enum, auto
-from tempfile import NamedTemporaryFile, TemporaryDirectory
 from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,11 +16,11 @@ from functools import partial
 
 ### Settings ###
 
-TEST_FOLDER = os.path.dirname(__file__)
+TEST_DIR = os.path.dirname(__file__)
 TIMEOUT = 10
-IR_PATH = os.path.join(TEST_FOLDER, "ir.py")
-VENUS_JAR = os.path.join(TEST_FOLDER, "venus.jar")
-COVERAGE_PATH = os.path.join(TEST_FOLDER, "coverage.py")
+IR_PATH = os.path.join(TEST_DIR, "ir.py")
+VENUS_JAR = os.path.join(TEST_DIR, "venus.jar")
+COVERAGE_PATH = os.path.join(TEST_DIR, "coverage.py")
 PYTHON = sys.executable  # always use the current python
 JAVA = shutil.which("java")
 CC = shutil.which("gcc") or shutil.which("clang")
@@ -27,6 +28,9 @@ RV32_GCC = shutil.which("riscv32-unknown-elf-gcc")
 RV32_QEMU = shutil.which("qemu-riscv32")
 USE_QEMU = os.environ.get("USE_QEMU", "").lower() in ["1", "true"]
 NO_PARALLEL = os.environ.get("NO_PARALLEL", "").lower() in ["1", "true"]
+
+TEMP_DIR = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, TEMP_DIR)
 
 ### Color Utils ###
 
@@ -123,53 +127,47 @@ class TestResult:
 
 def run_with_gcc(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab0
     assert test.expected is not None, f"Error: {test.filename} has no expected output."
-    with TemporaryDirectory() as tempdir:
-        src_file_path = os.path.join(tempdir, "main.c")
-        with open(src_file_path, "w") as f:
-            f.write(r"""
+    src_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".c").name)
+    with open(src_file_path, "w") as f:
+        f.write(r"""
 #include <stdio.h>
 
 int read() {
-    int x;
-    scanf("%d", &x);
-    return x;
+int x;
+scanf("%d", &x);
+return x;
 }
 
 void write(int x) {
-    printf("%d\n", x);
+printf("%d\n", x);
 }
 """)
-            f.write(open(test.filename).read())
+        f.write(open(test.filename).read())
 
-        executable_file_path = os.path.join(tempdir, "main")
-        try:
-            result = subprocess.run(
-                [compiler, src_file_path, "-o", executable_file_path],
-                capture_output=True,
-                timeout=TIMEOUT
-            )
-            if result.returncode != 0:  # compile error
-                return TestResult(test, result_type=ResultType.COMPILE_ERROR)
-        except subprocess.TimeoutExpired:
-            return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    executable_file_path = os.path.join(
+        TEMP_DIR,
+        Path(test.filename).with_suffix(
+            ".exe" if sys.platform.startswith("win") else ""
+        ).name
+    )
+    try:
+        result = subprocess.run(
+            [compiler, src_file_path, "-o", executable_file_path],
+            capture_output=True,
+            timeout=TIMEOUT
+        )
+        if result.returncode != 0:  # compile error
+            return TestResult(test, result_type=ResultType.COMPILE_ERROR)
+    except subprocess.TimeoutExpired:
+        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
 
-        try:
-            input_str = "\n".join(test.inputs) if test.inputs is not None else None
-            if qemu:
-                assert RV32_QEMU is not None, "Error: qemu-riscv32 not found."
-                start_time = time.time()
-                result = subprocess.run(
-                    [RV32_QEMU, executable_file_path],
-                    input=input_str,
-                    capture_output=True,
-                    text=True,
-                    timeout=TIMEOUT
-                )
-                end_time = time.time()
-                return TestResult(test, result.stdout.strip().split("\n"), result.returncode, run_time=end_time - start_time)
+    try:
+        input_str = "\n".join(test.inputs) if test.inputs is not None else None
+        if qemu:
+            assert RV32_QEMU is not None, "Error: qemu-riscv32 not found."
             start_time = time.process_time()
             result = subprocess.run(
-                [executable_file_path],
+                [RV32_QEMU, executable_file_path],
                 input=input_str,
                 capture_output=True,
                 text=True,
@@ -177,8 +175,18 @@ void write(int x) {
             )
             end_time = time.process_time()
             return TestResult(test, result.stdout.strip().split("\n"), result.returncode, run_time=end_time - start_time)
-        except subprocess.TimeoutExpired:
-            return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
+        start_time = time.process_time()
+        result = subprocess.run(
+            [executable_file_path],
+            input=input_str,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT
+        )
+        end_time = time.process_time()
+        return TestResult(test, result.stdout.strip().split("\n"), result.returncode, run_time=end_time - start_time)
+    except subprocess.TimeoutExpired:
+        return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
         
 def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
     assert test.inputs is None, "Not implemented input for lab1 or lab2"
@@ -192,12 +200,12 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
         return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
 
 def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
-    ir_file = NamedTemporaryFile(suffix=".zir")
+    ir_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".zir").name)
     assert os.path.exists(IR_PATH), f"Error: {IR_PATH} not found."
     assert test.expected is not None, f"Error: {test.filename} has no expected output."
     try:
         result = subprocess.run(
-            [compiler, test.filename, ir_file.name, '--ir'],  # add --ir flag
+            [compiler, test.filename, ir_file_path, '--ir'],  # add --ir flag
             capture_output=True,
             timeout=TIMEOUT)
         if result.returncode != 0:  # compile error
@@ -207,7 +215,7 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         
     try:
         result = subprocess.run(
-            [PYTHON, IR_PATH, ir_file.name],
+            [PYTHON, IR_PATH, ir_file_path],
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
@@ -225,13 +233,13 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
 
 def run_with_jar(compiler: str, test: Test) -> TestResult:  # lab4
-    assembly_file = NamedTemporaryFile(suffix=".s")
+    assembly_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".s").name)
     assert JAVA is not None, "Error: java not found."
     assert os.path.exists(VENUS_JAR), f"Error: {VENUS_JAR} not found."
     assert test.expected is not None, f"Error: {test.filename} has no expected output."
     try:
         result = subprocess.run(
-            [compiler, test.filename, assembly_file.name],
+            [compiler, test.filename, assembly_file_path],
             capture_output=True,
             timeout=TIMEOUT)
         if result.returncode != 0:  # compile error
@@ -241,14 +249,14 @@ def run_with_jar(compiler: str, test: Test) -> TestResult:  # lab4
         
     try:
         result = subprocess.run(
-            [JAVA, "-jar", VENUS_JAR, assembly_file.name],
+            [JAVA, "-jar", VENUS_JAR, assembly_file_path],
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
             timeout=TIMEOUT
         )
         result_step = subprocess.run(
-            [JAVA, "-jar", VENUS_JAR, assembly_file.name, '-n'],
+            [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-n'],
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
@@ -263,14 +271,14 @@ def run_with_qemu(compiler: str, test: Test) -> TestResult:  # lab4
     assert RV32_GCC is not None, "Error: riscv32-unknown-elf-gcc not found."
     assert RV32_QEMU is not None, "Error: qemu-riscv32 not found."
 
-    assembly_file = NamedTemporaryFile(suffix=".s")
-    executable_file = NamedTemporaryFile()
+    assembly_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".s").name)
+    executable_file_path = os.path.join(TEMP_DIR, Path(test.filename).stem)
     assert test.expected is not None, f"Error: {test.filename} has no expected output."
 
     # compile to assembly
     try:
         result = subprocess.run(
-            [compiler, test.filename, assembly_file.name, '--qemu'],    # add --qemu flag
+            [compiler, test.filename, assembly_file_path, '--qemu'],    # add --qemu flag
             capture_output=True,
             timeout=TIMEOUT
         )
@@ -282,7 +290,7 @@ def run_with_qemu(compiler: str, test: Test) -> TestResult:  # lab4
     # compile assembly to executable
     try:
         result = subprocess.run(
-            [RV32_GCC, assembly_file.name, "-o", executable_file.name],
+            [RV32_GCC, assembly_file_path, "-o", executable_file_path],
             capture_output=True,
             timeout=TIMEOUT
         )
@@ -293,24 +301,28 @@ def run_with_qemu(compiler: str, test: Test) -> TestResult:  # lab4
     
     # run with qemu
     try:
-        start_time = time.time()
+        start_time = time.process_time()
         result = subprocess.run(
-            [RV32_QEMU, executable_file.name],
+            [RV32_QEMU, executable_file_path],
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
             timeout=TIMEOUT,
         )
-        end_time = time.time()
+        end_time = time.process_time()
         return TestResult(test, result.stdout.split(), result.returncode, run_time=end_time - start_time)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
 
 def summary(test_results: list[TestResult]):
+    if len(test_results) == 0:
+        print(red("Error: no tests found."))
+        return
+
     def path_to_print(path) -> str:
         path = Path(path)
-        if path.is_relative_to(TEST_FOLDER):
-            return path.relative_to(TEST_FOLDER).as_posix()
+        if path.is_relative_to(TEST_DIR):
+            return path.relative_to(TEST_DIR).as_posix()
         else:
             return path.as_posix()
     
@@ -358,11 +370,11 @@ def test_lab(source_folder: str, lab: str):
     if lab == 'lab0':
         tests = list((Path(source_folder) / "appends" / "lab0").glob("*.sy"))
     elif 'bonus' in lab:
-        tests = list((Path(TEST_FOLDER) / "tests" / "lab4").glob("*.sy"))
+        tests = list((Path(TEST_DIR) / "tests" / "lab4").glob("*.sy"))
         if lab == 'bonus1':
             tests += list((Path(source_folder) / "appends" / "bonus1").glob("*.sy"))
     else:
-        tests = list((Path(TEST_FOLDER) / "tests" / lab).glob("*.sy"))
+        tests = list((Path(TEST_DIR) / "tests" / lab).glob("*.sy"))
     tests = sorted(tests)
 
     if lab == 'lab0':
@@ -395,7 +407,10 @@ def test_lab(source_folder: str, lab: str):
         compiler = CC if not USE_QEMU else RV32_GCC
         assert compiler is not None, "Error: gcc or clang not found." if not USE_QEMU else "Error: riscv32-unknown-elf-gcc not found."
     else:
-        compiler = os.path.join(source_folder, "compiler")
+        compiler = os.path.join(
+            source_folder,
+            "compiler.exe" if sys.platform.startswith("win") else "compiler"
+        )
         if not os.path.exists(compiler):
             raise FileNotFoundError(f"Error: {compiler} not found.")
 
