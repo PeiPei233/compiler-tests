@@ -509,6 +509,7 @@ op2func = {
     UnOp.Pos: lambda x: x,
 }
 
+step = 0
 
 class FunctionFrame:
     def __init__(self, name: str) -> None:
@@ -533,6 +534,8 @@ class FunctionFrame:
         while pc < len(self.codes):
             ir = self.codes[pc]
             pc += 1  # always increase pc
+            global step
+            step += 1
             if DEBUG:
                 print(ir)
             # run the code and get the next pc
@@ -700,7 +703,6 @@ if __name__ == "__main__":
     arg_parser.add_argument("file", type=str, help="The IR file to interpret.")
     arg_parser.add_argument("-d", "--debug", action="store_true",
                             help="Whether to print debug info.")
-    arg_parser.add_argument("-t", "--test", action="store_true", help="Whether to turn on test mode.")
     args = arg_parser.parse_args()
     if args.debug:
         print("Debug mode on.")
@@ -708,6 +710,6 @@ if __name__ == "__main__":
     irs = parse_file(args.file)
     return_value = run(irs)
     # 0 green, else red
-    if not args.test:
-        return_value = f"\033[1;32m{return_value}\033[0m" if return_value == 0 else f"\033[1;31m{return_value}\033[0m"
-        print('exit with code', return_value)
+    colored_return_value = f"\033[1;32m{return_value}\033[0m" if return_value == 0 else f"\033[1;31m{return_value}\033[0m"
+    print(f'Exit with code {colored_return_value} within {step} steps.')
+    exit(return_value)
