@@ -405,7 +405,10 @@ def test_lab(source_folder: str, lab: str):
     
     summary(test_results)
 
-    if lab != 'lab0':
+    if lab == 'lab0':
+        if len(tests) < 5:
+            print(red("Error: lab0 test cases are less than 5."))
+    else:
         if not (Path(source_folder) / "reports" / f"{lab}.pdf").exists():
             print(red(f"Error: reports/{lab}.pdf not found."))
 
