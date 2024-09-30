@@ -29,6 +29,7 @@ RV32_GCC = shutil.which("riscv32-unknown-elf-gcc")
 RV32_QEMU = shutil.which("qemu-riscv32")
 USE_QEMU = os.environ.get("USE_QEMU", "").lower() in ["1", "true"]
 NO_PARALLEL = os.environ.get("NO_PARALLEL", "").lower() in ["1", "true"]
+EXTRA_CFLAGS = os.environ.get("EXTRA_CFLAGS", "").split()
 
 TEMP_DIR = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, TEMP_DIR)
@@ -257,7 +258,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
         executable_file_path = os.path.join(TEMP_DIR, Path(test.filename).stem)
         try:
             result = subprocess.run(
-                [RV32_GCC, assembly_file_path, "-o", executable_file_path],
+                [RV32_GCC, assembly_file_path, "-o", executable_file_path] + EXTRA_CFLAGS,
                 capture_output=True,
                 timeout=TIMEOUT
             )
@@ -287,14 +288,14 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
 
         try:
             result = subprocess.run(
-                [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-ms', '-1'],         # -ms -1: ignore max step limit
+                [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-ahs', '-ms', '-1'],         # -ms -1: ignore max step limit
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
                 timeout=TIMEOUT
             )
             result_step = subprocess.run(
-                [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-n', '-ms', '-1'],   # -n: only output step count
+                [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
@@ -347,6 +348,7 @@ def summary(test_results: list[TestResult]):
         print(green("All tests passed!"))
     else:
         print(f"{passed}/{len(test_results)} tests passed.")
+    assert passed == len(test_results), "Error: some tests failed."  # all tests should pass
     print()
 
 
@@ -406,11 +408,9 @@ def test_lab(source_folder: str, lab: str):
     summary(test_results)
 
     if lab == 'lab0':
-        if len(tests) < 5:
-            print(red("Error: lab0 test cases are less than 5."))
+        assert len(tests) >= 5, "Error: lab0 test cases are less than 5."
     else:
-        if not (Path(source_folder) / "reports" / f"{lab}.pdf").exists():
-            print(red(f"Error: reports/{lab}.pdf not found."))
+        assert (Path(source_folder) / "reports" / f"{lab}.pdf").exists(), f"Error: reports/{lab}.pdf not found."
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test your compiler.")
