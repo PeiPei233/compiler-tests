@@ -472,17 +472,17 @@ if __name__ == "__main__":
                                 "lab0", "lab1", "lab2", "lab3", "lab4",
                                 "bonus1", "bonus2", "bonus3", "bonus4"
                             ])
-    parser.add_argument("source", type=str, help="Path to your repository.")
+    parser.add_argument("repo_path", type=str, nargs='?', default=os.getcwd(), help="Path to your repository. Defaults to the current working directory.")
     args = parser.parse_args()
-    source, lab = args.source, args.lab
+    repo_path, lab = args.repo_path, args.lab
     
-    cfg_path = Path(source) / "config.toml"
+    cfg_path = Path(repo_path) / "config.toml"
     if cfg_path.exists():
         for k, v in toml.load(cfg_path).items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
     try:
-        test_lab(source, lab)
+        test_lab(repo_path, lab)
     except Exception as e:
         if cfg.verbose:
             print(Traceback())
