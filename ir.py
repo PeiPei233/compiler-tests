@@ -47,6 +47,10 @@ class IRNode(ast_utils.Ast):
 
     def __str__(self) -> str:
         raise NotImplementedError("IRNode.__str__() is not implemented.")
+    
+    @property
+    def dst_var(self) -> Token | None:
+        return None
 
 
 @dataclass
@@ -62,6 +66,10 @@ class Binary(IRNode):
 
     def __str__(self) -> str:
         return f"{self.dst} := {self.left} {self.op} {self.right}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.dst
 
 
 @dataclass
@@ -83,6 +91,10 @@ class Binaryi(IRNode):
 
     def __str__(self) -> str:
         return f"{self.dst} := {self.left} {self.op} #{self.right}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.dst
 
 
 @dataclass
@@ -97,6 +109,10 @@ class Unary(IRNode):
 
     def __str__(self) -> str:
         return f"{self.dst} := {self.op} {self.right}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.dst
 
 
 @dataclass
@@ -146,6 +162,10 @@ class Deref(IRNode):
         if self.offset == 0:
             return f"{self.left} := *{self.right}"
         return f"{self.left} := *({self.right} + #{self.offset})"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.left
 
 
 @dataclass
@@ -163,6 +183,10 @@ class Li(IRNode):
 
     def __str__(self) -> str:
         return f"{self.label} = #{self.value}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.label
 
 
 @dataclass
@@ -203,6 +227,10 @@ class Param(IRNode):
 
     def __str__(self) -> str:
         return f"Param {self.name}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.name
 
 
 @dataclass
@@ -214,6 +242,10 @@ class Assign(IRNode):
 
     def __str__(self) -> str:
         return f"{self.dst} := {self.src}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.dst
 
 
 @dataclass
@@ -274,6 +306,10 @@ class Call(IRNode):
             return f"{self.left} := Call {self.right}"
         else:
             return f"{self.left} := Call {self.right}"
+        
+    @property
+    def dst_var(self) -> Token | None:
+        return self.left
 
 
 @dataclass
@@ -289,6 +325,10 @@ class Dec(IRNode):
 
     def __str__(self) -> str:
         return f"Dec {self.name} #{self.size}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.name
 
 @dataclass
 class La(IRNode):
@@ -299,6 +339,10 @@ class La(IRNode):
 
     def __str__(self) -> str:
         return f"{self.dst} := &{self.label}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.dst
 
 @dataclass
 class Global(IRNode):
@@ -323,6 +367,29 @@ class Fillw(IRNode):
 
     def __str__(self) -> str:
         return f".word #{self.value}"
+    
+@dataclass
+class Phi(IRNode):
+    """ Phi node """
+    
+    dst: Token
+    srcs: dict[Token, Token]
+    
+    def __init__(self, dst, *srcs):
+        self.dst = dst
+        self.srcs = {}
+        assert len(srcs) % 2 == 0, "srcs should be a list of key-value pairs"
+        for i in range(0, len(srcs), 2):
+            self.srcs[srcs[i]] = srcs[i + 1]
+        
+    def __str__(self) -> str:
+        srcs = ", ".join([f"[{k}, {v}]" for k, v in self.srcs.items()])
+        return f"{self.dst} = PHI {srcs}"
+    
+    @property
+    def dst_var(self) -> Token:
+        return self.dst
+        
 
 class ToIR(Transformer):
     def start(self, args): return args
@@ -369,6 +436,7 @@ start: instruction*
     | NAME "=" "&" NAME -> la
     | "GLOBAL" NAME ":" -> global
     | ".WORD" "#" SIGNED_INT -> fillw
+    | NAME "=" "PHI" "[" NAME "," NAME "]" ("," "[" NAME "," NAME "]")* -> phi
 
 ?relop : "<" -> lt
     | ">" -> gt
@@ -511,12 +579,16 @@ op2func = {
 
 step = 0
 
+is_ssa = True
+
 class FunctionFrame:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: Token) -> None:
         self.name = name
         self.labels = {}
         self.codes = []
         self.env = Environment()
+        self.trace = []
+        self.current_label = None
 
     def new(self) -> FunctionFrame:
         new_frame = FunctionFrame(self.name)
@@ -563,6 +635,7 @@ class FunctionFrame:
                 # function definition and label is not code
                 case Function(name) | Label(name):
                     global_env.labels[name] = pc
+                    self.trace.append(name)
                 case Goto(label):
                     if label not in self.labels:
                         raise ValueError(
@@ -624,15 +697,19 @@ class FunctionFrame:
                         raise ValueError(
                             f"Label {label} in function {self.name} is not defined.")
                     env[dst] = global_env.labels[label]
+                case Phi(dst, srcs):
+                    assert is_ssa, "Phi node is not in SSA form"
+                    assert len(self.trace) > 2, "No previous block"
+                    src = srcs[self.trace[-2]]
+                    env[dst] = env[src]
                 case _:
                     raise NotImplementedError(f"{ir} is not implemented.")
         assert False, f"No return statement in function {self.name}."
 
     def add_code(self, code) -> None:
+        if isinstance(code, Label):
+            self.labels[code.label] = len(self.codes)
         self.codes.append(code)
-
-    def add_label(self, label) -> None:
-        self.labels[label] = len(self.codes)
 
     def __str__(self) -> str:
         codes = [f"{self.codes[0]}:"]
@@ -645,18 +722,26 @@ def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
     frames = []
     global_var: dict[str, list[int]] = {}
     current_var = None
+    def_vars = set()
+    is_block_entry = False
+    have_phi = False
+    global is_ssa
     if len(irs) == 0 or not (isinstance(irs[0], Function) or isinstance(irs[0], Global)):
         raise SyntaxError("IR should start with a FUNCTION or GLOBAL.")
     for ir in irs:
+        if ir.dst_var is not None:
+            if ir.dst_var in def_vars:
+                is_ssa = False
+                if have_phi:
+                    raise SyntaxError("Phi node is not in SSA form.")
+            def_vars.add(ir.dst_var)
         if isinstance(ir, Function):
             frame = FunctionFrame(ir.name)
             frames.append(frame)
             global_env[ir.name] = frame
             frames[-1].add_code(ir)
             current_var = None
-        elif isinstance(ir, Label):
-            frames[-1].add_label(ir.label)
-            frames[-1].add_code(ir)
+            is_block_entry = True
         elif isinstance(ir, Global):
             if frames:
                 raise SyntaxError("Global variable should be defined before function.")
@@ -666,7 +751,18 @@ def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
             if current_var is None:
                 raise SyntaxError("No global variable to fill")
             global_var[current_var].append(ir.value)
+        elif isinstance(ir, Label):
+            is_block_entry = True
+            frames[-1].add_code(ir)
+        elif isinstance(ir, Phi):
+            if not is_block_entry:
+                raise SyntaxError("Phi node should be the first instruction in a block.")
+            if not is_ssa:
+                raise SyntaxError("Phi node is not in SSA form.")
+            frames[-1].add_code(ir)
+            have_phi = True
         else:
+            is_block_entry = False
             frames[-1].add_code(ir)
     for name, values in global_var.items():
         address = Array.new(len(values) * 4)
@@ -679,11 +775,13 @@ def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
     return frames
 
 
-def run(irs: list[IRNode]):
+def run(irs: list[IRNode], check_ssa: bool = False) -> int | None:
     """
     Runs the given IRNodes in the given environment.
     """
     all_functions = build_function(irs)
+    if check_ssa and not is_ssa:
+        raise SyntaxError("IR is not in SSA form.")
     if DEBUG:
         [print(frame) for frame in all_functions]
         print("\033[31m")
@@ -703,12 +801,14 @@ if __name__ == "__main__":
     arg_parser.add_argument("file", type=str, help="The IR file to interpret.")
     arg_parser.add_argument("-d", "--debug", action="store_true",
                             help="Whether to print debug info.")
+    arg_parser.add_argument("-s", "--ssa", action="store_true",
+                            help="Whether to check SSA form.")
     args = arg_parser.parse_args()
     if args.debug:
         print("Debug mode on.")
         DEBUG = True
     irs = parse_file(args.file)
-    return_value = run(irs)
+    return_value = run(irs, check_ssa=args.ssa)
     # 0 green, else red
     colored_return_value = f"\033[1;32m{return_value}\033[0m" if return_value == 0 else f"\033[1;31m{return_value}\033[0m"
     print(f'Exit with code {colored_return_value} within {step} steps.')

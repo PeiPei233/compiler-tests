@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
+from typing import Any, Callable
+
+import toml
+from rich import print
+from rich.table import Table
+from rich.progress import track
+from rich.traceback import Traceback
 
 ### Settings ###
 
@@ -27,30 +34,43 @@ JAVA = shutil.which("java")
 CC = shutil.which("gcc") or shutil.which("clang")
 RV32_GCC = shutil.which("riscv32-unknown-elf-gcc")
 RV32_QEMU = shutil.which("qemu-riscv32")
-USE_QEMU = os.environ.get("USE_QEMU", "").lower() in ["1", "true"]
-NO_PARALLEL = os.environ.get("NO_PARALLEL", "").lower() in ["1", "true"]
-EXTRA_CFLAGS = os.environ.get("EXTRA_CFLAGS", "").split()
 
 TEMP_DIR = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, TEMP_DIR)
+
+@dataclass
+class Config:
+    verbose: bool
+    use_qemu: bool
+    parallel: bool
+    check_ssa: bool
+    extra_cflags: list[str]
+    
+cfg = Config(
+    verbose = False,
+    use_qemu = False,
+    parallel = True,
+    check_ssa = False,
+    extra_cflags = []
+)
 
 ### Color Utils ###
 
 
 def red(s: str) -> str:
-    return f"\033[31m{s}\033[0m"
+    return f"[bold red]{s}[/bold red]"
 
 def green(s: str) -> str:
-    return f"\033[32m{s}\033[0m"
+    return f"[bold green]{s}[/bold green]"
 
 def blue(s: str) -> str:
-    return f"\033[34m{s}\033[0m"
+    return f"[bold blue]{s}[/bold blue]"
 
 def yellow(s: str) -> str:
-    return f"\033[33m{s}\033[0m"
+    return f"[bold yellow]{s}[/bold yellow]"
 
 def box(s: str) -> str:
-    return f"\033[1;7;37m{s}\033[0m"
+    return f"[bold reverse white on black]{s}[/bold reverse white on black]"
 
 ### Test Utils ###
 
@@ -80,8 +100,8 @@ class Test:
             else:
                 return Test(filename, None, None, False)
         elif len(comments) == 2:  # input and output
-            assert "Input:" in comments[0], f"Error: {filename} has non-paired input/output"
-            assert "Output:" in comments[1], f"Error: {filename} has non-paired input/output"
+            assert "Input:" in comments[0], f"{filename} has non-paired input/output"
+            assert "Output:" in comments[1], f"{filename} has non-paired input/output"
             input = comments[0].replace("Input:", "").split()
             if input[0] == "None":
                 input = None
@@ -90,7 +110,7 @@ class Test:
                 expected = None
             return Test(filename, input, expected, False)
         else:
-            assert False, f"Error: {filename} heading comment is invalid"
+            assert False, f"{filename} heading comment is invalid"
 
     def __str__(self):
         return f"Test({self.filename}, {self.inputs}, {self.expected}, {self.should_fail})"
@@ -113,7 +133,7 @@ class TestResult:
             self.result = ResultType.ACCEPTED if result_type == ResultType.COMPILE_ERROR else ResultType.WRONG_ANSWER
         else:
             if run_ret_code is not None and run_ret_code != 0:
-                assert result_type is None, "Error: run_ret_code and result_type cannot be both not None."
+                assert result_type is None, "run_ret_code and result_type cannot be both not None."
                 self.result = ResultType.RUNTIME_ERROR
             elif result_type is not None and result_type != ResultType.ACCEPTED:
                 self.result = result_type
@@ -127,8 +147,39 @@ class TestResult:
                         expected = "".join(test.expected)
                         self.result = ResultType.ACCEPTED if output == expected else ResultType.WRONG_ANSWER
 
+
+def measure_execution_time(func: Callable, *args, repeat: int = 10, use_last: int = 5, **kwargs) -> tuple[Any, float]:
+    """
+    Measure the execution time of a Callable object and return its result and average runtime.
+
+    Args:
+        func (Callable): The function to measure (no parameters).
+        repeat (int): Total number of repetitions, default is 10.
+        use_last (int): Number of last executions to use for average calculation, default is 5.
+
+    Returns:
+        Tuple[Any, float]: Returns the function's result and the average runtime of the last use_last executions.
+    """
+    results = []
+    times = []
+
+    for _ in range(repeat):
+        start_time = time.perf_counter()  # Higher precision timer
+        result = func(*args, **kwargs)  # Execute the function
+        end_time = time.perf_counter()
+
+        results.append(result)  # Store the result
+        times.append(end_time - start_time)  # Store the time
+
+    # Use the average time of the last use_last executions
+    average_time = sum(sorted(times)[-use_last:]) / use_last
+
+    # Return the result of the last execution and the average tim
+    return results[-1], average_time
+
+
 def run_with_src(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab0
-    assert test.expected is not None, f"Error: {test.filename} has no expected output."
+    assert test.expected is not None, f"{test.filename} has no expected output."
     src_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".c").name)
     with open(src_file_path, "w") as f:
         f.write(r"""
@@ -166,27 +217,25 @@ printf("%d\n", x);
     try:
         input_str = "\n".join(test.inputs) if test.inputs is not None else None
         if qemu:
-            assert RV32_QEMU is not None, "Error: qemu-riscv32 not found."
-            start_time = time.process_time()
-            result = subprocess.run(
+            assert RV32_QEMU is not None, "qemu-riscv32 not found."
+            result, run_time = measure_execution_time(
+                subprocess.run,
                 [RV32_QEMU, executable_file_path],
                 input=input_str,
                 capture_output=True,
                 text=True,
                 timeout=TIMEOUT
             )
-            end_time = time.process_time()
         else:
-            start_time = time.process_time()
-            result = subprocess.run(
+            result, run_time = measure_execution_time(
+                subprocess.run,
                 [executable_file_path],
                 input=input_str,
                 capture_output=True,
                 text=True,
                 timeout=TIMEOUT
             )
-            end_time = time.process_time()
-        return TestResult(test, result.stdout.strip().split("\n"), result.returncode, run_time=end_time - start_time)
+        return TestResult(test, result.stdout.strip().split("\n"), result.returncode, run_time=run_time)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
         
@@ -203,8 +252,8 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
 
 def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
     ir_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".zir").name)
-    assert os.path.exists(IR_PATH), f"Error: {IR_PATH} not found."
-    assert test.expected is not None, f"Error: {test.filename} has no expected output."
+    assert os.path.exists(IR_PATH), f"{IR_PATH} not found."
+    assert test.expected is not None, f"{test.filename} has no expected output."
     try:
         result = subprocess.run(
             [compiler, test.filename, ir_file_path, '--ir'],  # add --ir flag
@@ -217,7 +266,7 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         
     try:
         result = subprocess.run(
-            [PYTHON, IR_PATH, ir_file_path],
+            [PYTHON, IR_PATH, ir_file_path] + (["--ssa"] if cfg.check_ssa else []),
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
@@ -227,7 +276,7 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         output = [line.strip() for line in output if line.strip() != ""]
         # extract run step in the last line "Exit with code {exit_code} within {run_step} steps."
         match = re.search(r"within (\d+) steps", output[-1])
-        assert match is not None, f"Error: {test.filename} has no run step."
+        assert match is not None, f"{test.filename} has no run step."
         run_step = int(match.group(1))
         output = output[:-1]
         return TestResult(test, output, result.returncode, run_step=run_step)
@@ -235,7 +284,7 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
 
 def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab4
-    assert test.expected is not None, f"Error: {test.filename} has no expected output."
+    assert test.expected is not None, f"{test.filename} has no expected output."
 
     # compile to assembly
     assembly_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".s").name)
@@ -251,14 +300,14 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
         return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
     
     if qemu:
-        assert RV32_GCC is not None, "Error: riscv32-unknown-elf-gcc not found."
-        assert RV32_QEMU is not None, "Error: qemu-riscv32 not found."
+        assert RV32_GCC is not None, "riscv32-unknown-elf-gcc not found."
+        assert RV32_QEMU is not None, "qemu-riscv32 not found."
 
         # compile assembly to executable
         executable_file_path = os.path.join(TEMP_DIR, Path(test.filename).stem)
         try:
             result = subprocess.run(
-                [RV32_GCC, assembly_file_path, "-o", executable_file_path] + EXTRA_CFLAGS,
+                [RV32_GCC, assembly_file_path, "-o", executable_file_path] + cfg.extra_cflags,
                 capture_output=True,
                 timeout=TIMEOUT
             )
@@ -269,22 +318,21 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
         
         # run with qemu
         try:
-            start_time = time.process_time()
-            result = subprocess.run(
+            result, run_time = measure_execution_time(
+                subprocess.run,
                 [RV32_QEMU, executable_file_path],
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT,
+                timeout=TIMEOUT
             )
-            end_time = time.process_time()
-            return TestResult(test, result.stdout.split(), result.returncode, run_time=end_time - start_time)
+            return TestResult(test, result.stdout.split(), result.returncode, run_time=run_time)
         except subprocess.TimeoutExpired:
             return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
         
     else:   # run with venus
-        assert JAVA is not None, "Error: java not found."
-        assert os.path.exists(VENUS_JAR), f"Error: {VENUS_JAR} not found."
+        assert JAVA is not None, "java not found."
+        assert os.path.exists(VENUS_JAR), f"{VENUS_JAR} not found."
 
         try:
             result = subprocess.run(
@@ -307,9 +355,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
             return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
 
 def summary(test_results: list[TestResult]):
-    if len(test_results) == 0:
-        print(red("Error: no tests found."))
-        return
+    assert len(test_results) > 0, "no tests found."
 
     def path_to_print(path) -> str:
         path = Path(path)
@@ -329,26 +375,32 @@ def summary(test_results: list[TestResult]):
         }
         return color_map[result](result.name.replace("_", " ").title())
 
-    # get the longest filename
-    max_filename = max([len(path_to_print(test_result.test.filename))
-                        for test_result in test_results])
-    print()
+    # Create a Rich Table
+    table = Table(title="Test Results", box=None)
+    table.add_column("Test File", style="bold", justify="left")
+    table.add_column("Result", justify="left")
+    if test_results[0].run_time is not None:
+        table.add_column("Time", justify="right")
+    elif test_results[0].run_step is not None:
+        table.add_column("Steps", justify="right")
+
     for test_result in test_results:
-        # align the filename
-        print(f"{path_to_print(test_result.test.filename).ljust(max_filename)}    ", end="")
-        print(colored_result(test_result.result).ljust(25), end="")
+        test_file = path_to_print(test_result.test.filename)
+        result = colored_result(test_result.result)
+        details = ""
         if test_result.run_time is not None:
-            print(f"{test_result.run_time*1000:.2f}ms", end="")
+            details = f"{test_result.run_time*1000:.2f} ms"
         elif test_result.run_step is not None:
-            print(f"{test_result.run_step} steps", end="")
-        print()
+            details = f"{test_result.run_step} steps"
+        table.add_row(test_file, result, details)
+
+    print()
+    print(table)
+
     passed = len([test for test in test_results if test.result == ResultType.ACCEPTED])
     print()
-    if passed == len(test_results):
-        print(green("All tests passed!"))
-    else:
-        print(f"{passed}/{len(test_results)} tests passed.")
-    assert passed == len(test_results), "Error: some tests failed."  # all tests should pass
+    assert passed == len(test_results), f"{passed}/{len(test_results)} tests passed."
+    print(green("All tests passed!"))
     print()
 
 
@@ -366,13 +418,13 @@ def test_lab(source_folder: str, lab: str):
     tests = sorted(tests)
 
     test_func = {
-        'lab0': partial(run_with_src, qemu=USE_QEMU),
+        'lab0': partial(run_with_src, qemu=cfg.use_qemu),
         'lab1': run_only_compiler,
         'lab2': run_only_compiler,
         'lab3': run_with_ir,
-        'lab4': partial(run_with_asm, qemu=USE_QEMU),
-        'bonus1': partial(run_with_asm, qemu=USE_QEMU),
-        'bonus2': partial(run_with_asm, qemu=USE_QEMU),
+        'lab4': partial(run_with_asm, qemu=cfg.use_qemu),
+        'bonus1': partial(run_with_asm, qemu=cfg.use_qemu),
+        'bonus2': partial(run_with_asm, qemu=cfg.use_qemu),
         'bonus3': partial(run_with_asm, qemu=True),
         'bonus4': partial(run_with_asm, qemu=True)
     }[lab]
@@ -383,19 +435,17 @@ def test_lab(source_folder: str, lab: str):
             result = subprocess.run([PYTHON, COVERAGE_PATH, *map(str, tests)], check=True)
             print(green(f"lab0 coverage test passed."))
         except:
-            print(red(f"Error: lab0 coverage test failed."))
+            raise ValueError(f"lab0 coverage test failed.")
 
-        compiler = CC if not USE_QEMU else RV32_GCC
-        assert compiler is not None, "Error: gcc or clang not found." if not USE_QEMU else "Error: riscv32-unknown-elf-gcc not found."
+        compiler = CC if not cfg.use_qemu else RV32_GCC
+        assert compiler is not None, "gcc or clang not found." if not cfg.use_qemu else "riscv32-unknown-elf-gcc not found."
     else:
         compiler = shutil.which("compiler", path=source_folder)
-        assert compiler is not None, "Error: compiler not found in the source folder."
+        assert compiler is not None, "compiler not found in the source folder."
 
     tests = [Test.parse_file(str(test)) for test in tests]
 
-    if NO_PARALLEL:
-        test_results = [test_func(compiler, test) for test in tests]
-    else:
+    if cfg.parallel:
         results = {}
         with ThreadPoolExecutor() as executor:
             future_to_index = {executor.submit(test_func, compiler, test): i for i, test in enumerate(tests)}
@@ -403,14 +453,17 @@ def test_lab(source_folder: str, lab: str):
                 index = future_to_index[future]
                 result = future.result()
                 results[index] = result
-        test_results = [results[i] for i in range(len(tests))]
+        test_results = [results[i] for i in track(range(len(tests)), description="Running tests", disable=not cfg.verbose)]
+    else:
+        test_results = [test_func(compiler, test) for test in track(tests, description="Running tests", disable=not cfg.verbose)]
     
     summary(test_results)
 
     if lab == 'lab0':
-        assert len(tests) >= 5, "Error: lab0 test cases are less than 5."
+        assert len(test_results) >= 5, "lab0 test cases are less than 5."
     else:
-        assert (Path(source_folder) / "reports" / f"{lab}.pdf").exists(), f"Error: reports/{lab}.pdf not found."
+        assert (Path(source_folder) / "reports" / f"{lab}.pdf").exists(), \
+            f"reports/{lab}.pdf not found."
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test your compiler.")
@@ -422,5 +475,17 @@ if __name__ == "__main__":
     parser.add_argument("source", type=str, help="Path to your repository.")
     args = parser.parse_args()
     source, lab = args.source, args.lab
-    test_lab(source, lab)
+    
+    cfg_path = Path(source) / "config.toml"
+    if cfg_path.exists():
+        for k, v in toml.load(cfg_path).items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, v)
+    try:
+        test_lab(source, lab)
+    except Exception as e:
+        if cfg.verbose:
+            print(Traceback())
+        print(red(f"Error: {e}"))
+        sys.exit(1)
     print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
