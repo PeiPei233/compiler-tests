@@ -411,8 +411,8 @@ def test_lab(source_folder: str, lab: str):
         tests = list((Path(source_folder) / "appends" / "lab0").glob("*.sy"))
     elif 'bonus' in lab:
         tests = list((Path(TEST_DIR) / "tests" / "lab4").glob("*.sy"))
-        if lab == 'bonus1':
-            tests += list((Path(source_folder) / "appends" / "bonus1").glob("*.sy"))
+        if lab == 'bonus2':
+            tests += list((Path(source_folder) / "appends" / "bonus2").glob("*.sy"))
         elif lab == 'bonus4':
             tests += list((Path(source_folder) / "appends" / "bonus4").glob("*.sy"))
     else:
