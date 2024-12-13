@@ -25,7 +25,6 @@ from rich.traceback import Traceback
 
 
 TEST_DIR = os.path.dirname(__file__)
-TIMEOUT = 10
 IR_PATH = os.path.join(TEST_DIR, "ir.py")
 VENUS_JAR = os.path.join(TEST_DIR, "venus.jar")
 COVERAGE_PATH = os.path.join(TEST_DIR, "coverage.py")
@@ -44,6 +43,7 @@ class Config:
     use_qemu: bool
     parallel: bool
     check_ssa: bool
+    timeout: int
     extra_cflags: list[str]
     
 cfg = Config(
@@ -51,6 +51,7 @@ cfg = Config(
     use_qemu = False,
     parallel = True,
     check_ssa = False,
+    timeout = 10,
     extra_cflags = []
 )
 
@@ -207,7 +208,7 @@ printf("%d\n", x);
         result = subprocess.run(
             [compiler, src_file_path, "-o", executable_file_path],
             capture_output=True,
-            timeout=TIMEOUT
+            timeout=cfg.timeout
         )
         if result.returncode != 0:  # compile error
             return TestResult(test, result_type=ResultType.COMPILE_ERROR)
@@ -224,7 +225,7 @@ printf("%d\n", x);
                 input=input_str,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT
+                timeout=cfg.timeout
             )
         else:
             result, run_time = measure_execution_time(
@@ -233,7 +234,7 @@ printf("%d\n", x);
                 input=input_str,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT
+                timeout=cfg.timeout
             )
         return TestResult(test, result.stdout.strip().split("\n"), result.returncode, run_time=run_time)
     except subprocess.TimeoutExpired:
@@ -243,7 +244,7 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
     assert test.inputs is None, "Not implemented input for lab1 or lab2"
     try:
         result = subprocess.run(
-            [compiler, test.filename], capture_output=True, timeout=TIMEOUT)
+            [compiler, test.filename], capture_output=True, timeout=cfg.timeout)
         if result.returncode != 0:
             return TestResult(test, result_type=ResultType.COMPILE_ERROR)
         return TestResult(test, result_type=ResultType.ACCEPTED)
@@ -258,7 +259,7 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         result = subprocess.run(
             [compiler, test.filename, ir_file_path, '--ir'],  # add --ir flag
             capture_output=True,
-            timeout=TIMEOUT)
+            timeout=cfg.timeout)
         if result.returncode != 0:  # compile error
             return TestResult(test, result_type=ResultType.COMPILE_ERROR)
     except subprocess.TimeoutExpired:
@@ -270,15 +271,20 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
-            timeout=TIMEOUT
+            timeout=cfg.timeout
         )
         output = result.stdout.split("\n")
         output = [line.strip() for line in output if line.strip() != ""]
-        # extract run step in the last line "Exit with code {exit_code} within {run_step} steps."
-        match = re.search(r"within (\d+) steps", output[-1])
-        assert match is not None, f"{test.filename} has no run step."
-        run_step = int(match.group(1))
-        output = output[:-1]
+        if output:
+            # extract run step in the last line "Exit with code {exit_code} within {run_step} steps."
+            match = re.search(r"within (\d+) steps", output[-1])
+            if match:
+                run_step = int(match.group(1))
+            else:
+                run_step = None
+            output = output[:-1]
+        else:
+            run_step = None
         return TestResult(test, output, result.returncode, run_step=run_step)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
@@ -292,7 +298,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
         result = subprocess.run(
             [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
             capture_output=True,
-            timeout=TIMEOUT
+            timeout=cfg.timeout
         )
         if result.returncode != 0:  # compile error
             return TestResult(test, result_type=ResultType.COMPILE_ERROR)
@@ -309,7 +315,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
             result = subprocess.run(
                 [RV32_GCC, assembly_file_path, "-o", executable_file_path] + cfg.extra_cflags,
                 capture_output=True,
-                timeout=TIMEOUT
+                timeout=cfg.timeout
             )
             if result.returncode != 0:  # compile error
                 return TestResult(test, result_type=ResultType.COMPILE_ERROR)
@@ -324,7 +330,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT
+                timeout=cfg.timeout
             )
             return TestResult(test, result.stdout.split(), result.returncode, run_time=run_time)
         except subprocess.TimeoutExpired:
@@ -340,14 +346,14 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT
+                timeout=cfg.timeout
             )
             result_step = subprocess.run(
                 [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT
+                timeout=cfg.timeout
             )
             run_step = int(result_step.stdout.strip())
             return TestResult(test, result.stdout.strip().split("\n")[0], result.returncode, concat_output=True, run_step=run_step)

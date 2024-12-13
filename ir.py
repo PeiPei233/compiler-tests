@@ -699,7 +699,7 @@ class FunctionFrame:
                     env[dst] = global_env.labels[label]
                 case Phi(dst, srcs):
                     assert is_ssa, "Phi node is not in SSA form"
-                    assert len(self.trace) > 2, "No previous block"
+                    assert len(self.trace) > 1, "No previous block"
                     src = srcs[self.trace[-2]]
                     env[dst] = env[src]
                 case _:
@@ -733,7 +733,7 @@ def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
             if ir.dst_var in def_vars:
                 is_ssa = False
                 if have_phi:
-                    raise SyntaxError("Phi node is not in SSA form.")
+                    raise SyntaxError(f"Phi node is not in SSA form. {ir.dst_var} redefined.")
             def_vars.add(ir.dst_var)
         if isinstance(ir, Function):
             frame = FunctionFrame(ir.name)
@@ -742,6 +742,7 @@ def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
             frames[-1].add_code(ir)
             current_var = None
             is_block_entry = True
+            def_vars.clear()
         elif isinstance(ir, Global):
             if frames:
                 raise SyntaxError("Global variable should be defined before function.")
