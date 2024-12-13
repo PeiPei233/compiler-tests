@@ -393,12 +393,12 @@ def summary(test_results: list[TestResult]):
     for test_result in test_results:
         test_file = path_to_print(test_result.test.filename)
         result = colored_result(test_result.result)
-        details = ""
         if test_result.run_time is not None:
-            details = f"{test_result.run_time*1000:.2f} ms"
+            table.add_row(test_file, result, f"{test_result.run_time*1000:.2f} ms")
         elif test_result.run_step is not None:
-            details = f"{test_result.run_step} steps"
-        table.add_row(test_file, result, details)
+            table.add_row(test_file, result, f"{test_result.run_step} steps")
+        else:
+            table.add_row(test_file, result)
 
     print()
     print(table)
@@ -417,8 +417,10 @@ def test_lab(source_folder: str, lab: str):
         tests = list((Path(source_folder) / "appends" / "lab0").glob("*.sy"))
     elif 'bonus' in lab:
         tests = list((Path(TEST_DIR) / "tests" / "lab4").glob("*.sy"))
-        if lab == 'bonus1':
-            tests += list((Path(source_folder) / "appends" / "bonus1").glob("*.sy"))
+        if lab == 'bonus2':
+            tests += list((Path(source_folder) / "appends" / "bonus2").glob("*.sy"))
+        elif lab == 'bonus4':
+            tests += list((Path(source_folder) / "appends" / "bonus4").glob("*.sy"))
     else:
         tests = list((Path(TEST_DIR) / "tests" / lab).glob("*.sy"))
     tests = sorted(tests)
@@ -486,6 +488,7 @@ if __name__ == "__main__":
     if cfg_path.exists():
         for k, v in toml.load(cfg_path).items():
             if hasattr(cfg, k):
+                assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}."
                 setattr(cfg, k, v)
     try:
         test_lab(repo_path, lab)
