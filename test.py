@@ -15,12 +15,15 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from typing import Any, Callable
+from difflib import unified_diff
 
 import toml
 from rich import print
 from rich.table import Table
 from rich.progress import track
 from rich.traceback import Traceback
+from rich.panel import Panel
+from rich.syntax import Syntax
 
 ### Settings ###
 
@@ -136,18 +139,24 @@ class TimeType(Enum):
     NANOSECONDS = auto()
 
 class TestResult:
-    def __init__(self, test: Test, output: str | None | list[str] = None, run_ret_code: int | None = None, result_type: ResultType | None = None, concat_output: bool = False, run_time: float | None = None, run_time_type: TimeType = TimeType.STEPS) -> None:
+    def __init__(self,
+                 test: Test,
+                 output: str | None | list[str] = None,
+                 result_type: ResultType | None = None,
+                 concat_output: bool = False,
+                 run_time: float | None = None,
+                 run_time_type: TimeType = TimeType.STEPS,
+                 error: Exception | None = None
+    ) -> None:
         self.test = test
         self.output = output
         self.run_time = run_time
         self.run_time_type = run_time_type
+        self.error = error
         if test.should_fail:
             self.result = ResultType.ACCEPTED if result_type == ResultType.COMPILE_ERROR else ResultType.WRONG_ANSWER
         else:
-            if run_ret_code is not None and run_ret_code != 0:
-                assert result_type is None, "run_ret_code and result_type cannot be both not None."
-                self.result = ResultType.RUNTIME_ERROR
-            elif result_type is not None and result_type != ResultType.ACCEPTED:
+            if result_type is not None and result_type != ResultType.ACCEPTED:
                 self.result = result_type
             else:
                 if test.expected is None:
@@ -185,7 +194,11 @@ def execute_with_timing(func: Callable, *args, repeat: int = 10, use_last: int =
 
     return results[-use_last:], times[-use_last:]
 
-def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: bool) -> TestResult:
+def run_commands(commands: list[list[str]], *args, **kwargs) -> None:
+    for command in commands:
+        subprocess.run(command, capture_output=True, check=True, *args, **kwargs)
+
+def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: bool, wrap_main: bool) -> TestResult:
     
     executable_file_path = os.path.join(
         TEMP_DIR,
@@ -198,22 +211,21 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
         Path(test.filename).with_suffix(".o").name
     )
     try:
-        result = subprocess.run(
-            [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
-            capture_output=True,
-            timeout=cfg.timeout
-        )
-        if result.returncode != 0:  # compile error
-            return TestResult(test, result_type=ResultType.COMPILE_ERROR)
-        result = subprocess.run(
-            [compiler, object_file_path, os.path.join(TEST_DIR, "libs", "measure_time.c"), "-o", executable_file_path] + (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
-            capture_output=True,
-            timeout=cfg.timeout
-        )
-        if result.returncode != 0:  # compile error
-            return TestResult(test, result_type=ResultType.COMPILE_ERROR)
+        if wrap_main:
+            run_commands([
+                [compiler, src_file_path, MEASURE_TIME_C_PATH, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
+                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
+            ], timeout=cfg.timeout)
+        else:
+            run_commands([
+                [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
+                [compiler, object_file_path, MEASURE_TIME_C_PATH, "-o", executable_file_path] + \
+                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
+            ], timeout=cfg.timeout)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except Exception as e:
+        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
     input_str = "\n".join(test.inputs) if test.inputs is not None else None
     
@@ -229,7 +241,8 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
             input=input_str,
             capture_output=True,
             text=True,
-            timeout=cfg.timeout
+            timeout=cfg.timeout,
+            check=True,
         )
         sample_result = results[-1]
         assert isinstance(sample_result, subprocess.CompletedProcess), "subprocess.run failed."
@@ -244,7 +257,7 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
                 match = re.search(r"Execution time: (\d+) cycles", time_line)
                 assert match, "Execution time not found."
                 cycles.append(int(match.group(1)))
-            return TestResult(test, sample_output[:-1], sample_result.returncode, run_time=sum(cycles) / len(cycles), run_time_type=TimeType.CYCLES)
+            return TestResult(test, sample_output[:-1], run_time=sum(cycles) / len(cycles), run_time_type=TimeType.CYCLES)
         # case 2: Execution time: %ld s %ld ns
         match = re.search(r"Execution time: (\d+) s (\d+) ns", sample_output[-1])
         if match:
@@ -255,30 +268,30 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
                 match = re.search(r"Execution time: (\d+) s (\d+) ns", time_line)
                 assert match, "Execution time not found."
                 times.append(int(match.group(1)) * 1e9 + int(match.group(2)))
-            return TestResult(test, sample_output[:-1], sample_result.returncode, run_time=sum(times) / len(times), run_time_type=TimeType.NANOSECONDS)
+            return TestResult(test, sample_output[:-1], run_time=sum(times) / len(times), run_time_type=TimeType.NANOSECONDS)
         # case 3: no match, use run_times avg
-        return TestResult(test, sample_output, sample_result.returncode, run_time=sum(run_times) / len(run_times), run_time_type=TimeType.NANOSECONDS)
+        return TestResult(test, sample_output, run_time=sum(run_times) / len(run_times), run_time_type=TimeType.NANOSECONDS)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
+    except Exception as e:
+        return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
 
-
-def run_with_src(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab0
+def run_with_src(compiler: str, test: Test, qemu: bool = False, is_clang: bool = False) -> TestResult:  # lab0
     assert test.expected is not None, f"{test.filename} has no expected output."
     src_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".c").name)
     shutil.copy(test.filename, src_file_path)
-
-    return compile_run_result(compiler, src_file_path, test, qemu)
+    
+    return compile_run_result(compiler, src_file_path, test, qemu, wrap_main=not is_clang)
         
 def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
     assert test.inputs is None, "Not implemented input for lab1 or lab2"
     try:
-        result = subprocess.run(
-            [compiler, test.filename], capture_output=True, timeout=cfg.timeout)
-        if result.returncode != 0:
-            return TestResult(test, result_type=ResultType.COMPILE_ERROR)
+        subprocess.run([compiler, test.filename], capture_output=True, timeout=cfg.timeout, check=True)
         return TestResult(test, result_type=ResultType.ACCEPTED)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except Exception as e:
+        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
 def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
     ir_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".zir").name)
@@ -288,11 +301,12 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         result = subprocess.run(
             [compiler, test.filename, ir_file_path, '--ir'],  # add --ir flag
             capture_output=True,
+            check=True,
             timeout=cfg.timeout)
-        if result.returncode != 0:  # compile error
-            return TestResult(test, result_type=ResultType.COMPILE_ERROR)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except Exception as e:
+        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
         
     try:
         result = subprocess.run(
@@ -300,7 +314,8 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
-            timeout=cfg.timeout
+            timeout=cfg.timeout,
+            check=True
         )
         output = result.stdout.split("\n")
         output = [line.strip() for line in output if line.strip() != ""]
@@ -314,31 +329,34 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
             output = output[:-1]
         else:
             run_step = None
-        return TestResult(test, output, result.returncode, run_time=run_step, run_time_type=TimeType.STEPS)
+        return TestResult(test, output, run_time=run_step, run_time_type=TimeType.STEPS)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
+    except Exception as e:
+        return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
 
 def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab4
     assert test.expected is not None, f"{test.filename} has no expected output."
 
     # compile to assembly
-    assembly_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".s").name)
+    assembly_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".S").name)
     try:
-        result = subprocess.run(
+        subprocess.run(
             [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
             capture_output=True,
-            timeout=cfg.timeout
+            timeout=cfg.timeout,
+            check=True
         )
-        if result.returncode != 0:  # compile error
-            return TestResult(test, result_type=ResultType.COMPILE_ERROR)
     except subprocess.TimeoutExpired:
         return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except Exception as e:
+        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
     
     if qemu:
         assert RV32_GCC is not None, "riscv32-unknown-elf-gcc not found."
         assert RV32_QEMU is not None, "qemu-riscv32 not found."
 
-        return compile_run_result(RV32_GCC, assembly_file_path, test, use_qemu=True)    
+        return compile_run_result(RV32_GCC, assembly_file_path, test, use_qemu=True, wrap_main=True)    
     else:   # run with venus
         assert JAVA is not None, "java not found."
         assert os.path.exists(VENUS_JAR), f"{VENUS_JAR} not found."
@@ -349,19 +367,23 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
-                timeout=cfg.timeout
+                timeout=cfg.timeout,
+                check=True
             )
             result_step = subprocess.run(
                 [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
-                timeout=cfg.timeout
+                timeout=cfg.timeout,
+                check=True
             )
             run_step = int(result_step.stdout.strip())
-            return TestResult(test, result.stdout.strip().split("\n")[0], result.returncode, concat_output=True, run_time=run_step, run_time_type=TimeType.STEPS)
+            return TestResult(test, result.stdout.strip().split("\n")[0], concat_output=True, run_time=run_step, run_time_type=TimeType.STEPS)
         except subprocess.TimeoutExpired:
             return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
+        except Exception as e:
+            return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
 
 def summary(test_results: list[TestResult], source_folder: str):
     assert len(test_results) > 0, "no tests found."
@@ -403,6 +425,71 @@ def summary(test_results: list[TestResult], source_folder: str):
         else:
             raise ValueError("Invalid TimeType.")
 
+    if cfg.verbose:
+        for test_result in test_results:
+            # Create a panel for each test
+            test_filename = path_to_print(test_result.test.filename)
+            result_text = colored_result(test_result.result)
+
+            header_text = f"[bold]{test_filename}[/bold] {result_text}"
+            # WRONG_ANSWER case
+            if test_result.result == ResultType.WRONG_ANSWER:
+                body = []
+
+                if test_result.test.should_fail:
+                    body.append("[yellow]Expected to fail but passed.[/yellow]")
+                    print(Panel("\n".join(body), title=str(header_text), expand=False))
+                else:
+                    expected = test_result.test.expected or ["None"]
+                    got = test_result.output or ["None"]
+
+                    # Generate diff
+                    diff = unified_diff(
+                        expected,
+                        got,
+                        fromfile="Expected",
+                        tofile="Got",
+                        lineterm=""
+                    )
+
+                    # Highlight diff using Syntax
+                    diff_text = "\n".join(diff)
+                    if diff_text.strip():
+                        diff_syntax = Syntax(diff_text, "diff", line_numbers=False)
+                    else:
+                        diff_syntax = "[dim]No differences found[/dim]"
+
+                    body.append("[bold cyan]Differences:[/bold cyan]")
+                    print(Panel(diff_syntax, title=header_text, expand=False))
+
+            # Other non-ACCEPTED errors
+            elif test_result.result != ResultType.ACCEPTED:
+                body = [f"[bold]Error Type:[/bold] {result_text}"]
+
+                if isinstance(test_result.error, subprocess.CalledProcessError):
+                    body.append("[bold]Subprocess Error Details:[/bold]")
+                    try:
+                        stdout = test_result.error.stdout.decode() or "[dim]No stdout[/dim]"
+                    except:
+                        stdout = test_result.error.stdout or "[dim]No stdout[/dim]"
+
+                    try:
+                        stderr = test_result.error.stderr.decode() or "[dim]No stderr[/dim]"
+                    except:
+                        stderr = test_result.error.stderr or "[dim]No stderr[/dim]"
+
+                    # Add stdout/stderr in a table
+                    table = Table(show_header=False, header_style="bold magenta", box=None)
+                    table.add_column("Stream", style="cyan", justify="right")
+                    table.add_column("Content", style="white")
+                    table.add_row("brief", str(test_result.error))
+                    table.add_row("stdout", stdout)
+                    table.add_row("stderr", stderr)
+                    print(Panel(table, title=str(header_text), expand=False))
+                else:
+                    body.append(f"[red]{test_result.error}[/red]")
+                    print(Panel("\n".join(body), title=str(header_text), expand=False))
+
     # Create a Rich Table
     table = Table(title="Test Results", box=None)
     table.add_column("Test File", style="bold", justify="left")
@@ -429,32 +516,24 @@ def summary(test_results: list[TestResult], source_folder: str):
     print()
 
 
-def test_lab(source_folder: str, lab: str):
+def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
     print(box(f"Running {lab} test..."))
 
-    if lab == 'lab0':
-        tests = list((Path(source_folder) / "appends" / "lab0").glob("*.sy"))
-        tests += list((Path(TEST_DIR) / "tests" / "lab4").glob("*.sy"))
-    elif 'bonus' in lab:
-        tests = list((Path(TEST_DIR) / "tests" / "lab4").glob("*.sy"))
-        if lab == 'bonus2':
-            tests += list((Path(source_folder) / "appends" / "bonus2").glob("*.sy"))
-        elif lab == 'bonus3':
-            tests += list((Path(source_folder) / "appends" / "bonus3").glob("*.sy"))
+    if files:
+        tests = [path for file in files for path in (Path(file).rglob("*.sy") if os.path.isdir(file) else [Path(file)])]
     else:
-        tests = list((Path(TEST_DIR) / "tests" / lab).glob("*.sy"))
+        if lab == 'lab0':
+            tests = list((Path(source_folder) / "appends" / "lab0").glob("*.sy"))
+        elif 'bonus' in lab:
+            tests = list((Path(TEST_DIR) / "tests" / "lab4").glob("*.sy"))
+            if lab == 'bonus2':
+                tests += list((Path(source_folder) / "appends" / "bonus2").glob("*.sy"))
+            elif lab == 'bonus3':
+                tests += list((Path(TEST_DIR) / "tests" / "bonus3").glob("*.sy"))
+                tests += list((Path(source_folder) / "appends" / "bonus3").glob("*.sy"))
+        else:
+            tests = list((Path(TEST_DIR) / "tests" / lab).glob("*.sy"))
     tests = sorted(tests)
-
-    test_func = {
-        'lab0': partial(run_with_src, qemu=cfg.use_qemu),
-        'lab1': run_only_compiler,
-        'lab2': run_only_compiler,
-        'lab3': run_with_ir,
-        'lab4': partial(run_with_asm, qemu=cfg.use_qemu),
-        'bonus1': partial(run_with_asm, qemu=cfg.use_qemu),
-        'bonus2': partial(run_with_asm, qemu=cfg.use_qemu),
-        'bonus3': partial(run_with_asm, qemu=True),
-    }[lab]
     
     if lab == 'lab0':
         # test coverage
@@ -466,10 +545,26 @@ def test_lab(source_folder: str, lab: str):
 
         compiler = CC if not cfg.use_qemu else RV32_GCC
         assert compiler is not None, "gcc or clang not found." if not cfg.use_qemu else "riscv32-unknown-elf-gcc not found."
+        def check_is_clang(compiler: str) -> bool:
+            result = subprocess.run([compiler, "--version"], capture_output=True, text=True)
+            return "clang" in result.stdout
+        is_clang = check_is_clang(compiler)
     else:
         compiler = shutil.which("compiler", path=source_folder)
         assert compiler is not None, "compiler not found in the source folder."
+        is_clang = False
 
+    test_func = {
+        'lab0': partial(run_with_src, qemu=cfg.use_qemu, is_clang=is_clang),
+        'lab1': run_only_compiler,
+        'lab2': run_only_compiler,
+        'lab3': run_with_ir,
+        'lab4': partial(run_with_asm, qemu=cfg.use_qemu),
+        'bonus1': partial(run_with_asm, qemu=cfg.use_qemu),
+        'bonus2': partial(run_with_asm, qemu=cfg.use_qemu),
+        'bonus3': partial(run_with_asm, qemu=True),
+    }[lab]
+    
     tests = [Test.parse_file(str(test)) for test in tests]
 
     if cfg.parallel:
@@ -486,15 +581,10 @@ def test_lab(source_folder: str, lab: str):
     
     summary(test_results, source_folder)
 
-    if lab == 'lab0':
+    if not files and lab == 'lab0':
         global test_score
         test_score = min(100, 100 * test_score / 5)
         assert len(test_results) >= 5, "lab0 test cases are less than 5."
-    else:
-        assert (Path(source_folder) / "reports" / f"{lab}.pdf").exists(), \
-            f"reports/{lab}.pdf not found."
-        global report_score
-        report_score = 100
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test your compiler.")
@@ -504,8 +594,9 @@ if __name__ == "__main__":
                                 "bonus1", "bonus2", "bonus3", "bonus3"
                             ])
     parser.add_argument("repo_path", type=str, nargs='?', default=os.getcwd(), help="Path to your repository. Defaults to the current working directory.")
+    parser.add_argument("-f", "--file", nargs="*", default=[], help="Specific test files/dirs to run. Will not record score.")
     args = parser.parse_args()
-    repo_path, lab = args.repo_path, args.lab
+    repo_path, lab, files = args.repo_path, args.lab, args.file
     
     cfg_path = Path(repo_path) / "config.toml"
     if cfg_path.exists():
@@ -515,15 +606,22 @@ if __name__ == "__main__":
                 setattr(cfg, k, v)
     failed = False
     try:
-        test_lab(repo_path, lab)
+        test_lab(repo_path, lab, files)
     except Exception as e:
-        if cfg.verbose:
+        if cfg.verbose and not isinstance(e, AssertionError):
             print(Traceback())
         print(red(f"Error: {e}"))
         failed = True
-    if lab == 'lab0':
-        print(f"Expected score: {test_score:.2f}")
-    else:
-        print(f"Expected score: {test_score*0.9+report_score*0.1:.2f}")
-    print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if not files:
+        if lab == 'lab0':
+            print(f"Expected score: {test_score:.2f}")
+        else:
+            if not (Path(repo_path) / "reports" / f"{lab}.pdf").exists():
+                print(red(f"reports/{lab}.pdf not found."))
+                failed = True
+                report_score = 0
+            else:
+                report_score = 100
+            print(f"Expected score: {test_score*0.9+report_score*0.1:.2f}")
+    print(datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"))
     sys.exit(1 if failed else 0)
