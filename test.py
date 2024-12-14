@@ -1,5 +1,6 @@
 import atexit
 from pprint import isreadable
+import signal
 import sys
 import os
 import argparse
@@ -431,14 +432,15 @@ def summary(test_results: list[TestResult], source_folder: str):
             test_filename = path_to_print(test_result.test.filename)
             result_text = colored_result(test_result.result)
 
-            header_text = f"[bold]{test_filename}[/bold] {result_text}"
+            title = f"[bold]{test_filename}[/bold] {result_text}"
             # WRONG_ANSWER case
             if test_result.result == ResultType.WRONG_ANSWER:
                 body = []
 
                 if test_result.test.should_fail:
-                    body.append("[yellow]Expected to fail but passed.[/yellow]")
-                    print(Panel("\n".join(body), title=str(header_text), expand=False))
+                    body.append("[yellow]Expected to compile with error, but compiled successfully.[/yellow]")
+                    print()
+                    print(Panel("\n".join(body), title=title, title_align='left', expand=True))
                 else:
                     expected = test_result.test.expected or ["None"]
                     got = test_result.output or ["None"]
@@ -460,7 +462,8 @@ def summary(test_results: list[TestResult], source_folder: str):
                         diff_syntax = "[dim]No differences found[/dim]"
 
                     body.append("[bold cyan]Differences:[/bold cyan]")
-                    print(Panel(diff_syntax, title=header_text, expand=False))
+                    print()
+                    print(Panel(diff_syntax, title=title, title_align='left', expand=True))
 
             # Other non-ACCEPTED errors
             elif test_result.result != ResultType.ACCEPTED:
@@ -469,29 +472,41 @@ def summary(test_results: list[TestResult], source_folder: str):
                 if isinstance(test_result.error, subprocess.CalledProcessError):
                     body.append("[bold]Subprocess Error Details:[/bold]")
                     try:
-                        stdout = test_result.error.stdout.decode() or "[dim]No stdout[/dim]"
+                        stdout = test_result.error.stdout.decode().strip() or "[dim]No stdout[/dim]"
                     except:
                         stdout = test_result.error.stdout or "[dim]No stdout[/dim]"
 
                     try:
-                        stderr = test_result.error.stderr.decode() or "[dim]No stderr[/dim]"
+                        stderr = test_result.error.stderr.decode().strip() or "[dim]No stderr[/dim]"
                     except:
                         stderr = test_result.error.stderr or "[dim]No stderr[/dim]"
+                        
+                    returncode = test_result.error.returncode
+                    if returncode and returncode < 0:
+                        try:
+                            return_text = f"{signal.Signals(-returncode)} ({returncode})"
+                        except ValueError:
+                            return_text = f"{returncode}"
+                    else:
+                        return_text = f"{returncode}"
 
                     # Add stdout/stderr in a table
-                    table = Table(show_header=False, header_style="bold magenta", box=None)
-                    table.add_column("Stream", style="cyan", justify="right")
+                    table = Table(show_header=False, header_style="bold magenta", box=None, highlight=True)
+                    table.add_column("", style="cyan bold", justify="right")
                     table.add_column("Content", style="white")
-                    table.add_row("brief", str(test_result.error))
-                    table.add_row("stdout", stdout)
-                    table.add_row("stderr", stderr)
-                    print(Panel(table, title=str(header_text), expand=False))
+                    table.add_row("Command", str(test_result.error.cmd))
+                    table.add_row("ExitVal", return_text)
+                    table.add_row("StdOutp", stdout)
+                    table.add_row("StdErrs", stderr)
+                    print()
+                    print(Panel(table, title=title, title_align='left', expand=True))
                 else:
                     body.append(f"[red]{test_result.error}[/red]")
-                    print(Panel("\n".join(body), title=str(header_text), expand=False))
+                    print()
+                    print(Panel("\n".join(body), title=title, title_align='left', expand=True))
 
     # Create a Rich Table
-    table = Table(title="Test Results", box=None)
+    table = Table(title="Test Results", box=None, expand=True, highlight=True)
     table.add_column("Test File", style="bold", justify="left")
     table.add_column("Result", justify="left")
     table.add_column("Time", justify="left")
@@ -541,7 +556,7 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
             result = subprocess.run([PYTHON, COVERAGE_PATH, *map(str, tests)], check=True)
             print(green(f"lab0 coverage test passed."))
         except:
-            raise ValueError(f"lab0 coverage test failed.")
+            assert False, f"lab0 coverage test failed."
 
         compiler = CC if not cfg.use_qemu else RV32_GCC
         assert compiler is not None, "gcc or clang not found." if not cfg.use_qemu else "riscv32-unknown-elf-gcc not found."
@@ -623,5 +638,6 @@ if __name__ == "__main__":
             else:
                 report_score = 100
             print(f"[bold]Expected score: {test_score*0.9+report_score*0.1:.2f}[/bold]")
-    print(datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"))
+    print(datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S %Z"))
+    
     sys.exit(1 if failed else 0)
