@@ -1,5 +1,4 @@
 import atexit
-from pprint import isreadable
 import signal
 import sys
 import os
@@ -44,6 +43,8 @@ RV32_QEMU = shutil.which("qemu-riscv32")
 TEMP_DIR = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, TEMP_DIR)
 
+OUTPUT_DIR = TEMP_DIR
+
 test_score = 0
 report_score = 0
 
@@ -62,7 +63,7 @@ cfg = Config(
     parallel = True,
     check_ssa = False,
     timeout = 10,
-    extra_cflags = [os.path.join(TEST_DIR, "libs", "io.c")]
+    extra_cflags = [IO_C_PATH]
 )
 
 ### Color Utils ###
@@ -202,13 +203,13 @@ def run_commands(commands: list[list[str]], *args, **kwargs) -> None:
 def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: bool, wrap_main: bool) -> TestResult:
     
     executable_file_path = os.path.join(
-        TEMP_DIR,
+        OUTPUT_DIR,
         Path(test.filename).with_suffix(
             ".exe" if sys.platform.startswith("win") else ""
         ).name
     )
     object_file_path = os.path.join(
-        TEMP_DIR,
+        OUTPUT_DIR,
         Path(test.filename).with_suffix(".o").name
     )
     try:
@@ -279,7 +280,7 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
 
 def run_with_src(compiler: str, test: Test, qemu: bool = False, is_clang: bool = False) -> TestResult:  # lab0
     assert test.expected is not None, f"{test.filename} has no expected output."
-    src_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".c").name)
+    src_file_path = os.path.join(OUTPUT_DIR, Path(test.filename).with_suffix(".c").name)
     shutil.copy(test.filename, src_file_path)
     
     return compile_run_result(compiler, src_file_path, test, qemu, wrap_main=not is_clang)
@@ -295,7 +296,7 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
 def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
-    ir_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".zir").name)
+    ir_file_path = os.path.join(OUTPUT_DIR, Path(test.filename).with_suffix(".zir").name)
     assert os.path.exists(IR_PATH), f"{IR_PATH} not found."
     assert test.expected is not None, f"{test.filename} has no expected output."
     try:
@@ -340,7 +341,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
     assert test.expected is not None, f"{test.filename} has no expected output."
 
     # compile to assembly
-    assembly_file_path = os.path.join(TEMP_DIR, Path(test.filename).with_suffix(".S").name)
+    assembly_file_path = os.path.join(OUTPUT_DIR, Path(test.filename).with_suffix(".S").name)
     try:
         subprocess.run(
             [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
@@ -610,8 +611,14 @@ if __name__ == "__main__":
                             ])
     parser.add_argument("repo_path", type=str, nargs='?', default=os.getcwd(), help="Path to your repository. Defaults to the current working directory.")
     parser.add_argument("-f", "--file", nargs="*", default=[], help="Specific test files/dirs to run. Will not record score.")
+    parser.add_argument("-o", "--output", type=str, help="Output directory for test results.")
     args = parser.parse_args()
     repo_path, lab, files = args.repo_path, args.lab, args.file
+    
+    if args.output:
+        OUTPUT_DIR = args.output
+        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        print(f"All compiled files will be stored in {OUTPUT_DIR}")
     
     cfg_path = Path(repo_path) / "config.toml"
     if cfg_path.exists():
