@@ -24,6 +24,7 @@ from rich.progress import track
 from rich.traceback import Traceback
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.console import Group
 
 ### Settings ###
 
@@ -97,7 +98,7 @@ class Test:
     @staticmethod
     def parse_file(filename: str) -> "Test":
         content = open(filename).readlines()
-        comments = []
+        comments: list[str] = []
         for line in content:
             # get comment, start with //
             if line.strip().startswith("//"):
@@ -171,7 +172,7 @@ class TestResult:
                         self.result = ResultType.ACCEPTED if output == expected else ResultType.WRONG_ANSWER
 
 
-def execute_with_timing(func: Callable, *args, repeat: int = 10, use_last: int = 5, **kwargs) -> tuple[list[Any], list[float]]:
+def execute_with_timing(func: Callable[..., Any], *args, repeat: int = 10, use_last: int = 5, **kwargs) -> tuple[list[Any], list[float]]:
     """
     Run a function multiple times and return the results and times.
 
@@ -183,8 +184,8 @@ def execute_with_timing(func: Callable, *args, repeat: int = 10, use_last: int =
     Returns:
         Tuple[List[Any], List[float]]: List of results and list of times.
     """
-    results = []
-    times = []
+    results: list[Any] = []
+    times: list[float] = []
 
     for _ in range(repeat):
         start_time = time.perf_counter()  # Higher precision timer
@@ -224,8 +225,8 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
                 [compiler, object_file_path, MEASURE_TIME_C_PATH, "-o", executable_file_path] + \
                     (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
             ], timeout=cfg.timeout)
-    except subprocess.TimeoutExpired:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
     except Exception as e:
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
@@ -252,7 +253,7 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
         # case 1: Execution time: %llu cycles
         match = re.search(r"Execution time: (\d+) cycles", sample_output[-1])
         if match:
-            cycles = []
+            cycles: list[int] = []
             for result in results:
                 output = result.stdout.strip().split("\n")
                 time_line = output[-1]
@@ -263,18 +264,18 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
         # case 2: Execution time: %ld s %ld ns
         match = re.search(r"Execution time: (\d+) s (\d+) ns", sample_output[-1])
         if match:
-            times = []
+            times: list[int] = []
             for result in results:
                 output = result.stdout.strip().split("\n")
                 time_line = output[-1]
                 match = re.search(r"Execution time: (\d+) s (\d+) ns", time_line)
                 assert match, "Execution time not found."
-                times.append(int(match.group(1)) * 1e9 + int(match.group(2)))
+                times.append(int(int(match.group(1)) * 1e9 + int(match.group(2))))
             return TestResult(test, sample_output[:-1], run_time=sum(times) / len(times), run_time_type=TimeType.NANOSECONDS)
         # case 3: no match, use run_times avg
-        return TestResult(test, sample_output, run_time=sum(run_times) / len(run_times), run_time_type=TimeType.NANOSECONDS)
-    except subprocess.TimeoutExpired:
-        return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
+        return TestResult(test, sample_output, run_time=int(sum(run_times) / len(run_times) * 1e9), run_time_type=TimeType.NANOSECONDS)
+    except subprocess.TimeoutExpired as e:
+        return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
     except Exception as e:
         return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
 
@@ -290,8 +291,8 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
     try:
         subprocess.run([compiler, test.filename], capture_output=True, timeout=cfg.timeout, check=True)
         return TestResult(test, result_type=ResultType.ACCEPTED)
-    except subprocess.TimeoutExpired:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
     except Exception as e:
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
@@ -305,8 +306,8 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
             capture_output=True,
             check=True,
             timeout=cfg.timeout)
-    except subprocess.TimeoutExpired:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
     except Exception as e:
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
         
@@ -332,8 +333,8 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         else:
             run_step = None
         return TestResult(test, output, run_time=run_step, run_time_type=TimeType.STEPS)
-    except subprocess.TimeoutExpired:
-        return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
     except Exception as e:
         return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
 
@@ -349,8 +350,8 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
             timeout=cfg.timeout,
             check=True
         )
-    except subprocess.TimeoutExpired:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
     except Exception as e:
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
     
@@ -382,8 +383,8 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
             )
             run_step = int(result_step.stdout.strip())
             return TestResult(test, result.stdout.strip().split("\n")[0], concat_output=True, run_time=run_step, run_time_type=TimeType.STEPS)
-        except subprocess.TimeoutExpired:
-            return TestResult(test, result_type=ResultType.RUN_TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
         except Exception as e:
             return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
 
@@ -441,7 +442,7 @@ def summary(test_results: list[TestResult], source_folder: str):
                 if test_result.test.should_fail:
                     body.append("[yellow]Expected to compile with error, but compiled successfully.[/yellow]")
                     print()
-                    print(Panel("\n".join(body), title=title, title_align='left', expand=True))
+                    print(Panel(Group(*body), title=title, title_align='left', expand=True))
                 else:
                     expected = test_result.test.expected or ["None"]
                     got = test_result.output or ["None"]
@@ -462,21 +463,19 @@ def summary(test_results: list[TestResult], source_folder: str):
                     else:
                         diff_syntax = "[dim]No differences found[/dim]"
 
-                    body.append("[bold cyan]Differences:[/bold cyan]")
+                    body.append(diff_syntax)
                     print()
-                    print(Panel(diff_syntax, title=title, title_align='left', expand=True))
+                    print(Panel(Group(*body), title=title, title_align='left', expand=True, highlight=True))
 
             # Other non-ACCEPTED errors
             elif test_result.result != ResultType.ACCEPTED:
-                body = [f"[bold]Error Type:[/bold] {result_text}"]
+                body = []
 
                 if isinstance(test_result.error, subprocess.CalledProcessError):
-                    body.append("[bold]Subprocess Error Details:[/bold]")
                     try:
                         stdout = test_result.error.stdout.decode().strip() or "[dim]No stdout[/dim]"
                     except:
                         stdout = test_result.error.stdout or "[dim]No stdout[/dim]"
-
                     try:
                         stderr = test_result.error.stderr.decode().strip() or "[dim]No stderr[/dim]"
                     except:
@@ -492,19 +491,40 @@ def summary(test_results: list[TestResult], source_folder: str):
                         return_text = f"{returncode}"
 
                     # Add stdout/stderr in a table
-                    table = Table(show_header=False, header_style="bold magenta", box=None, highlight=True)
-                    table.add_column("", style="cyan bold", justify="right")
-                    table.add_column("Content", style="white")
+                    table = Table(show_header=False, box=None, highlight=True)
+                    table.add_column(style="cyan bold", justify="right")
+                    table.add_column()
                     table.add_row("Command", str(test_result.error.cmd))
                     table.add_row("ExitVal", return_text)
                     table.add_row("StdOutp", stdout)
                     table.add_row("StdErrs", stderr)
                     print()
-                    print(Panel(table, title=title, title_align='left', expand=True))
-                else:
-                    body.append(f"[red]{test_result.error}[/red]")
+                    print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
+                elif isinstance(test_result.error, subprocess.TimeoutExpired):
+                    try:
+                        assert test_result.error.stdout is not None
+                        stdout = test_result.error.stdout.decode().strip() or "[dim]No stdout[/dim]"
+                    except:
+                        stdout = "[dim]No stdout[/dim]"
+                    try:
+                        assert test_result.error.stderr is not None
+                        stderr = test_result.error.stderr.decode().strip() or "[dim]No stderr[/dim]"
+                    except:
+                        stderr = "[dim]No stderr[/dim]"
+                    table = Table(show_header=False, box=None, highlight=True)
+                    table.add_column(style="cyan bold", justify="right")
+                    table.add_column()
+                    table.add_row("Command", str(test_result.error.cmd))
+                    table.add_row("Timeout", f"{test_result.error.timeout} seconds")
+                    table.add_row("StdOutp", stdout)
+                    table.add_row("StdErrs", stderr)
                     print()
-                    print(Panel("\n".join(body), title=title, title_align='left', expand=True))
+                    print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
+                else:
+                    body.append("[bold]Error Details:[/bold]")
+                    body.append(f"{test_result.error}")
+                    print()
+                    print(Panel(Group(*body), title=title, title_align='left', expand=True, highlight=True))
 
     # Create a Rich Table
     table = Table(title="Test Results", box=None, expand=True, highlight=True)
@@ -612,6 +632,7 @@ if __name__ == "__main__":
     parser.add_argument("repo_path", type=str, nargs='?', default=os.getcwd(), help="Path to your repository. Defaults to the current working directory.")
     parser.add_argument("-f", "--file", nargs="*", default=[], help="Specific test files/dirs to run. Will not record score.")
     parser.add_argument("-o", "--output", type=str, help="Output directory for test results.")
+    
     args = parser.parse_args()
     repo_path, lab, files = args.repo_path, args.lab, args.file
     
