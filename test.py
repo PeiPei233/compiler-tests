@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
-from typing import Any, Callable
+from typing import Callable, TypeVar
 from difflib import unified_diff
 
 import toml
@@ -24,7 +24,7 @@ from rich.progress import track
 from rich.traceback import Traceback
 from rich.panel import Panel
 from rich.syntax import Syntax
-from rich.console import Group
+from rich.console import Group, RenderableType
 
 ### Settings ###
 
@@ -44,10 +44,9 @@ RV32_QEMU = shutil.which("qemu-riscv32")
 TEMP_DIR = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, TEMP_DIR)
 
-OUTPUT_DIR = TEMP_DIR
+output_dir = TEMP_DIR
 
 test_score = 0
-report_score = 0
 
 @dataclass
 class Config:
@@ -171,8 +170,8 @@ class TestResult:
                         expected = "".join(test.expected)
                         self.result = ResultType.ACCEPTED if output == expected else ResultType.WRONG_ANSWER
 
-
-def execute_with_timing(func: Callable[..., Any], *args, repeat: int = 10, use_last: int = 5, **kwargs) -> tuple[list[Any], list[float]]:
+_T = TypeVar("_T")
+def execute_with_timing(func: Callable[..., _T], *args, repeat: int = 10, use_last: int = 5, **kwargs) -> tuple[list[_T], list[float]]: # type: ignore
     """
     Run a function multiple times and return the results and times.
 
@@ -184,7 +183,7 @@ def execute_with_timing(func: Callable[..., Any], *args, repeat: int = 10, use_l
     Returns:
         Tuple[List[Any], List[float]]: List of results and list of times.
     """
-    results: list[Any] = []
+    results: list[_T] = []
     times: list[float] = []
 
     for _ in range(repeat):
@@ -197,20 +196,20 @@ def execute_with_timing(func: Callable[..., Any], *args, repeat: int = 10, use_l
 
     return results[-use_last:], times[-use_last:]
 
-def run_commands(commands: list[list[str]], *args, **kwargs) -> None:
+def run_commands(commands: list[list[str]], *args, **kwargs) -> None: # type: ignore
     for command in commands:
-        subprocess.run(command, capture_output=True, check=True, *args, **kwargs)
+        subprocess.run(command, capture_output=True, check=True, *args, **kwargs) # type: ignore
 
 def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: bool, wrap_main: bool) -> TestResult:
     
     executable_file_path = os.path.join(
-        OUTPUT_DIR,
+        output_dir,
         Path(test.filename).with_suffix(
             ".exe" if sys.platform.startswith("win") else ""
         ).name
     )
     object_file_path = os.path.join(
-        OUTPUT_DIR,
+        output_dir,
         Path(test.filename).with_suffix(".o").name
     )
     try:
@@ -248,7 +247,6 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
             check=True,
         )
         sample_result = results[-1]
-        assert isinstance(sample_result, subprocess.CompletedProcess), "subprocess.run failed."
         sample_output = sample_result.stdout.strip().split("\n")
         # case 1: Execution time: %llu cycles
         match = re.search(r"Execution time: (\d+) cycles", sample_output[-1])
@@ -281,7 +279,7 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
 
 def run_with_src(compiler: str, test: Test, qemu: bool = False, is_clang: bool = False) -> TestResult:  # lab0
     assert test.expected is not None, f"{test.filename} has no expected output."
-    src_file_path = os.path.join(OUTPUT_DIR, Path(test.filename).with_suffix(".c").name)
+    src_file_path = os.path.join(output_dir, Path(test.filename).with_suffix(".c").name)
     shutil.copy(test.filename, src_file_path)
     
     return compile_run_result(compiler, src_file_path, test, qemu, wrap_main=not is_clang)
@@ -297,7 +295,7 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
 def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
-    ir_file_path = os.path.join(OUTPUT_DIR, Path(test.filename).with_suffix(".zir").name)
+    ir_file_path = os.path.join(output_dir, Path(test.filename).with_suffix(".zir").name)
     assert os.path.exists(IR_PATH), f"{IR_PATH} not found."
     assert test.expected is not None, f"{test.filename} has no expected output."
     try:
@@ -342,7 +340,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
     assert test.expected is not None, f"{test.filename} has no expected output."
 
     # compile to assembly
-    assembly_file_path = os.path.join(OUTPUT_DIR, Path(test.filename).with_suffix(".S").name)
+    assembly_file_path = os.path.join(output_dir, Path(test.filename).with_suffix(".S").name)
     try:
         subprocess.run(
             [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
@@ -391,8 +389,8 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
 def summary(test_results: list[TestResult], source_folder: str):
     assert len(test_results) > 0, "no tests found."
 
-    def path_to_print(path) -> str:
-        path = Path(path)
+    def path_to_print(path: str) -> str: # type: ignore
+        path: Path = Path(path)
         if path.is_relative_to(TEST_DIR):
             return path.relative_to(TEST_DIR).as_posix()
         elif path.is_relative_to(Path(source_folder)):
@@ -444,8 +442,8 @@ def summary(test_results: list[TestResult], source_folder: str):
                     print()
                     print(Panel(Group(*body), title=title, title_align='left', expand=True))
                 else:
-                    expected = test_result.test.expected or ["None"]
-                    got = test_result.output or ["None"]
+                    expected = test_result.test.expected or []
+                    got = test_result.output or []
 
                     # Generate diff
                     diff = unified_diff(
@@ -469,7 +467,7 @@ def summary(test_results: list[TestResult], source_folder: str):
 
             # Other non-ACCEPTED errors
             elif test_result.result != ResultType.ACCEPTED:
-                body = []
+                body: list[RenderableType] = []
 
                 if isinstance(test_result.error, subprocess.CalledProcessError):
                     try:
@@ -492,7 +490,7 @@ def summary(test_results: list[TestResult], source_folder: str):
 
                     # Add stdout/stderr in a table
                     table = Table(show_header=False, box=None, highlight=True)
-                    table.add_column(style="cyan bold", justify="right")
+                    table.add_column(style="yellow italic", justify="right")
                     table.add_column()
                     table.add_row("Command", str(test_result.error.cmd))
                     table.add_row("ExitVal", return_text)
@@ -512,7 +510,7 @@ def summary(test_results: list[TestResult], source_folder: str):
                     except:
                         stderr = "[dim]No stderr[/dim]"
                     table = Table(show_header=False, box=None, highlight=True)
-                    table.add_column(style="cyan bold", justify="right")
+                    table.add_column(style="yellow italic", justify="right")
                     table.add_column()
                     table.add_row("Command", str(test_result.error.cmd))
                     table.add_row("Timeout", f"{test_result.error.timeout} seconds")
@@ -590,7 +588,7 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
         assert compiler is not None, "compiler not found in the source folder."
         is_clang = False
 
-    test_func = {
+    test_func: dict[str, Callable[[str, Test], TestResult]] = {
         'lab0': partial(run_with_src, qemu=cfg.use_qemu, is_clang=is_clang),
         'lab1': run_only_compiler,
         'lab2': run_only_compiler,
@@ -599,21 +597,21 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
         'bonus1': partial(run_with_asm, qemu=cfg.use_qemu),
         'bonus2': partial(run_with_asm, qemu=cfg.use_qemu),
         'bonus3': partial(run_with_asm, qemu=True),
-    }[lab]
+    }
     
     tests = [Test.parse_file(str(test)) for test in tests]
 
     if cfg.parallel:
-        results = {}
+        results: dict[int, TestResult] = {}
         with ThreadPoolExecutor() as executor:
-            future_to_index = {executor.submit(test_func, compiler, test): i for i, test in enumerate(tests)}
+            future_to_index = {executor.submit(test_func[lab], compiler, test): i for i, test in enumerate(tests)}
             for future in as_completed(future_to_index):
                 index = future_to_index[future]
                 result = future.result()
                 results[index] = result
         test_results = [results[i] for i in track(range(len(tests)), description="Running tests", disable=not cfg.verbose)]
     else:
-        test_results = [test_func(compiler, test) for test in track(tests, description="Running tests", disable=not cfg.verbose)]
+        test_results = [test_func[lab](compiler, test) for test in track(tests, description="Running tests", disable=not cfg.verbose)]
     
     summary(test_results, source_folder)
 
@@ -627,19 +625,29 @@ if __name__ == "__main__":
     parser.add_argument("lab", type=str, help="Which lab to test",
                             choices=[
                                 "lab0", "lab1", "lab2", "lab3", "lab4",
-                                "bonus1", "bonus2", "bonus3", "bonus3"
+                                "bonus1", "bonus2", "bonus3"
                             ])
     parser.add_argument("repo_path", type=str, nargs='?', default=os.getcwd(), help="Path to your repository. Defaults to the current working directory.")
-    parser.add_argument("-f", "--file", nargs="*", default=[], help="Specific test files/dirs to run. Will not record score.")
+    parser.add_argument("-f", "--file", nargs="*", help="Specific test files/dirs to run. Will not record score.")
     parser.add_argument("-o", "--output", type=str, help="Output directory for test results.")
+    
+    str2bool: Callable[[str], bool] = lambda x: x.lower() in {'true', 't', 'yes', 'y', '1'}
+    parser.add_argument("-v", "--verbose", type=str2bool, nargs='?', const=True, help="Print detailed error messages.")
+    parser.add_argument("--use-qemu", "--use_qemu", "--qemu", type=str2bool, nargs='?', const=True, help="Use qemu-riscv32 to run tests.")
+    parser.add_argument("--parallel", type=str2bool, nargs='?', const=True, help="Run tests in parallel.")
+    parser.add_argument("--check-ssa", "--check_ssa", type=str2bool, nargs='?', const=True, help="Check SSA form in lab3.")
+    parser.add_argument("--timeout", type=int, help="Timeout for each test case.")
+    parser.add_argument("--extra-cflags", "--extra_cflags", nargs='*', help="Extra cflags for gcc/clang.")
     
     args = parser.parse_args()
     repo_path, lab, files = args.repo_path, args.lab, args.file
     
     if args.output:
-        OUTPUT_DIR = args.output
-        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-        print(f"All compiled files will be stored in {OUTPUT_DIR}")
+        output_dir = args.output
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        print(f"All compiled files will be stored in {output_dir}")
+    if args.extra_cflags:
+        args.extra_cflags = [flag for flags in args.extra_cflags for flag in flags.split()]
     
     cfg_path = Path(repo_path) / "config.toml"
     if cfg_path.exists():
@@ -647,6 +655,20 @@ if __name__ == "__main__":
             if hasattr(cfg, k):
                 assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}."
                 setattr(cfg, k, v)
+    
+    for k, v in vars(args).items():
+        if v is not None and hasattr(cfg, k):
+            assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}."
+            setattr(cfg, k, v)
+    
+    if cfg.verbose:
+        table = Table(show_header=False, box=None, highlight=True)
+        table.add_column(justify="right", style="yellow italic")
+        table.add_column()
+        for k in sorted(vars(cfg)):
+            table.add_row(k, str(getattr(cfg, k)))
+        print(Panel(table, title="Configurations", title_align='left', expand=True, highlight=True, border_style="blue"))
+    
     failed = False
     try:
         test_lab(repo_path, lab, files)
