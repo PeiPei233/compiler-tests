@@ -10,7 +10,7 @@ import tempfile
 import time
 import re
 from enum import Enum, auto
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
@@ -29,42 +29,41 @@ from rich.console import Group, RenderableType
 ### Settings ###
 
 
-TEST_DIR = os.path.dirname(__file__)
-IR_PATH = os.path.join(TEST_DIR, "ir.py")
-VENUS_JAR = os.path.join(TEST_DIR, "venus.jar")
-COVERAGE_PATH = os.path.join(TEST_DIR, "coverage.py")
-IO_C_PATH = os.path.join(TEST_DIR, "libs", "io.c")
-MEASURE_TIME_C_PATH = os.path.join(TEST_DIR, "libs", "measure_time.c")
-PYTHON = sys.executable  # always use the current python
-JAVA = shutil.which("java")
-CC = shutil.which("gcc") or shutil.which("clang")
-RV32_GCC = shutil.which("riscv32-unknown-elf-gcc")
-RV32_QEMU = shutil.which("qemu-riscv32")
+@dataclass
+class EnvironmentConfig:
+    test_dir: str = os.path.dirname(__file__)
+    temp_dir: str = tempfile.mkdtemp()
+    output_dir: str = temp_dir
+    
+    ir_path: str = os.path.join(test_dir, "ir.py")
+    venus_jar: str = os.path.join(test_dir, "venus.jar")
+    coverage_py: str = os.path.join(test_dir, "coverage.py")
+    io_c: str = os.path.join(test_dir, "libs", "io.c")
+    measure_time_c_path: str = os.path.join(test_dir, "libs", "measure_time.c")
+    
+    python: str = sys.executable
+    java: str | None = shutil.which("java")
+    cc: str | None = shutil.which("gcc") or shutil.which("clang")
+    rv32_gcc: str | None = shutil.which("riscv32-unknown-elf-gcc")
+    rv32_qemu: str | None = shutil.which("qemu-riscv32")
 
-TEMP_DIR = tempfile.mkdtemp()
-atexit.register(shutil.rmtree, TEMP_DIR)
+    def __post_init__(self):
+        atexit.register(shutil.rmtree, self.temp_dir)
 
-output_dir = TEMP_DIR
+envs = EnvironmentConfig()
 
 test_score = 0
 
 @dataclass
-class Config:
-    verbose: bool
-    use_qemu: bool
-    parallel: bool
-    check_ssa: bool
-    timeout: int
-    extra_cflags: list[str]
+class TestConfig:
+    verbose: bool = False
+    use_qemu: bool = False
+    parallel: bool = True
+    check_ssa: bool = False
+    timeout: int = 10
+    extra_cflags: list[str] = field(default_factory=lambda: [envs.io_c])
     
-cfg = Config(
-    verbose = False,
-    use_qemu = False,
-    parallel = True,
-    check_ssa = False,
-    timeout = 10,
-    extra_cflags = [IO_C_PATH]
-)
+cfg = TestConfig()
 
 ### Color Utils ###
 
@@ -203,25 +202,25 @@ def run_commands(commands: list[list[str]], *args, **kwargs) -> None: # type: ig
 def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: bool, wrap_main: bool) -> TestResult:
     
     executable_file_path = os.path.join(
-        output_dir,
+        envs.output_dir,
         Path(test.filename).with_suffix(
             ".exe" if sys.platform.startswith("win") else ""
         ).name
     )
     object_file_path = os.path.join(
-        output_dir,
+        envs.output_dir,
         Path(test.filename).with_suffix(".o").name
     )
     try:
         if wrap_main:
             run_commands([
-                [compiler, src_file_path, MEASURE_TIME_C_PATH, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
+                [compiler, src_file_path, envs.measure_time_c_path, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
                     (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
             ], timeout=cfg.timeout)
         else:
             run_commands([
                 [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
-                [compiler, object_file_path, MEASURE_TIME_C_PATH, "-o", executable_file_path] + \
+                [compiler, object_file_path, envs.measure_time_c_path, "-o", executable_file_path] + \
                     (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
             ], timeout=cfg.timeout)
     except subprocess.TimeoutExpired as e:
@@ -232,8 +231,8 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
     input_str = "\n".join(test.inputs) if test.inputs is not None else None
     
     if use_qemu:
-        assert RV32_QEMU is not None, "qemu-riscv32 not found."
-        cmd = [RV32_QEMU, executable_file_path]
+        assert envs.rv32_qemu is not None, "qemu-riscv32 not found."
+        cmd = [envs.rv32_qemu, executable_file_path]
     else:
         cmd = [executable_file_path]
     try:
@@ -279,7 +278,7 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
 
 def run_with_src(compiler: str, test: Test, qemu: bool = False, is_clang: bool = False) -> TestResult:  # lab0
     assert test.expected is not None, f"{test.filename} has no expected output."
-    src_file_path = os.path.join(output_dir, Path(test.filename).with_suffix(".c").name)
+    src_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".c").name)
     shutil.copy(test.filename, src_file_path)
     
     return compile_run_result(compiler, src_file_path, test, qemu, wrap_main=not is_clang)
@@ -295,8 +294,8 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
 def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
-    ir_file_path = os.path.join(output_dir, Path(test.filename).with_suffix(".zir").name)
-    assert os.path.exists(IR_PATH), f"{IR_PATH} not found."
+    ir_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".zir").name)
+    assert os.path.exists(envs.ir_path), f"{envs.ir_path} not found."
     assert test.expected is not None, f"{test.filename} has no expected output."
     try:
         result = subprocess.run(
@@ -311,7 +310,7 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         
     try:
         result = subprocess.run(
-            [PYTHON, IR_PATH, ir_file_path] + (["--ssa"] if cfg.check_ssa else []),
+            [envs.python, envs.ir_path, ir_file_path] + (["--ssa"] if cfg.check_ssa else []),
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
@@ -340,7 +339,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
     assert test.expected is not None, f"{test.filename} has no expected output."
 
     # compile to assembly
-    assembly_file_path = os.path.join(output_dir, Path(test.filename).with_suffix(".S").name)
+    assembly_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".S").name)
     try:
         subprocess.run(
             [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
@@ -354,17 +353,17 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
     
     if qemu:
-        assert RV32_GCC is not None, "riscv32-unknown-elf-gcc not found."
-        assert RV32_QEMU is not None, "qemu-riscv32 not found."
+        assert envs.rv32_gcc is not None, "riscv32-unknown-elf-gcc not found."
+        assert envs.rv32_qemu is not None, "qemu-riscv32 not found."
 
-        return compile_run_result(RV32_GCC, assembly_file_path, test, use_qemu=True, wrap_main=True)    
+        return compile_run_result(envs.rv32_gcc, assembly_file_path, test, use_qemu=True, wrap_main=True)    
     else:   # run with venus
-        assert JAVA is not None, "java not found."
-        assert os.path.exists(VENUS_JAR), f"{VENUS_JAR} not found."
+        assert envs.java is not None, "java not found."
+        assert os.path.exists(envs.venus_jar), f"{envs.venus_jar} not found."
 
         try:
             result = subprocess.run(
-                [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-ahs', '-ms', '-1'],         # -ms -1: ignore max step limit
+                [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-ms', '-1'],         # -ms -1: ignore max step limit
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
@@ -372,7 +371,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
                 check=True
             )
             result_step = subprocess.run(
-                [JAVA, "-jar", VENUS_JAR, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
+                [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
                 input="\n".join(test.inputs) if test.inputs is not None else None,
                 capture_output=True,
                 text=True,
@@ -391,8 +390,8 @@ def summary(test_results: list[TestResult], source_folder: str):
 
     def path_to_print(path: str) -> str: # type: ignore
         path: Path = Path(path)
-        if path.is_relative_to(TEST_DIR):
-            return path.relative_to(TEST_DIR).as_posix()
+        if path.is_relative_to(envs.test_dir):
+            return path.relative_to(envs.test_dir).as_posix()
         elif path.is_relative_to(Path(source_folder)):
             return path.relative_to(Path(source_folder)).as_posix()
         else:
@@ -492,10 +491,10 @@ def summary(test_results: list[TestResult], source_folder: str):
                     table = Table(show_header=False, box=None, highlight=True)
                     table.add_column(style="yellow italic", justify="right")
                     table.add_column()
-                    table.add_row("Command", str(test_result.error.cmd))
-                    table.add_row("ExitVal", return_text)
-                    table.add_row("StdOutp", stdout)
-                    table.add_row("StdErrs", stderr)
+                    table.add_row("command", str(test_result.error.cmd))
+                    table.add_row("exit code", return_text)
+                    table.add_row("stdout", stdout)
+                    table.add_row("stderr", stderr)
                     print()
                     print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
                 elif isinstance(test_result.error, subprocess.TimeoutExpired):
@@ -512,10 +511,10 @@ def summary(test_results: list[TestResult], source_folder: str):
                     table = Table(show_header=False, box=None, highlight=True)
                     table.add_column(style="yellow italic", justify="right")
                     table.add_column()
-                    table.add_row("Command", str(test_result.error.cmd))
+                    table.add_row("command", str(test_result.error.cmd))
                     table.add_row("Timeout", f"{test_result.error.timeout} seconds")
-                    table.add_row("StdOutp", stdout)
-                    table.add_row("StdErrs", stderr)
+                    table.add_row("stdout", stdout)
+                    table.add_row("stderr", stderr)
                     print()
                     print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
                 else:
@@ -559,25 +558,25 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
         if lab == 'lab0':
             tests = list((Path(source_folder) / "appends" / "lab0").glob("*.sy"))
         elif 'bonus' in lab:
-            tests = list((Path(TEST_DIR) / "tests" / "lab4").glob("*.sy"))
+            tests = list((Path(envs.test_dir) / "tests" / "lab4").glob("*.sy"))
             if lab == 'bonus2':
                 tests += list((Path(source_folder) / "appends" / "bonus2").glob("*.sy"))
             elif lab == 'bonus3':
-                tests += list((Path(TEST_DIR) / "tests" / "bonus3").glob("*.sy"))
+                tests += list((Path(envs.test_dir) / "tests" / "bonus3").glob("*.sy"))
                 tests += list((Path(source_folder) / "appends" / "bonus3").glob("*.sy"))
         else:
-            tests = list((Path(TEST_DIR) / "tests" / lab).glob("*.sy"))
+            tests = list((Path(envs.test_dir) / "tests" / lab).glob("*.sy"))
     tests = sorted(tests)
     
     if lab == 'lab0':
         # test coverage
         try:
-            result = subprocess.run([PYTHON, COVERAGE_PATH, *map(str, tests)], check=True)
+            result = subprocess.run([envs.python, envs.coverage_py, *map(str, tests)], check=True)
             print(green(f"lab0 coverage test passed."))
         except:
             assert False, f"lab0 coverage test failed."
 
-        compiler = CC if not cfg.use_qemu else RV32_GCC
+        compiler = envs.cc if not cfg.use_qemu else envs.rv32_gcc
         assert compiler is not None, "gcc or clang not found." if not cfg.use_qemu else "riscv32-unknown-elf-gcc not found."
         def check_is_clang(compiler: str) -> bool:
             result = subprocess.run([compiler, "--version"], capture_output=True, text=True)
@@ -643,9 +642,9 @@ if __name__ == "__main__":
     repo_path, lab, files = args.repo_path, args.lab, args.file
     
     if args.output:
-        output_dir = args.output
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        print(f"All compiled files will be stored in {output_dir}")
+        envs.output_dir = args.output
+        Path(envs.output_dir).mkdir(parents=True, exist_ok=True)
+        print(f"All compiled files will be stored in {envs.output_dir}")
     if args.extra_cflags:
         args.extra_cflags = [flag for flags in args.extra_cflags for flag in flags.split()]
     
@@ -665,9 +664,16 @@ if __name__ == "__main__":
         table = Table(show_header=False, box=None, highlight=True)
         table.add_column(justify="right", style="yellow italic")
         table.add_column()
+        for k in sorted(vars(envs)):
+            table.add_row(k, str(getattr(envs, k)))
+        print(Panel(table, title="Environment Configurations", title_align='left', expand=True, highlight=True, border_style="blue"))
+        table = Table(show_header=False, box=None, highlight=True)
+        table.add_column(justify="right", style="yellow italic")
+        table.add_column()
         for k in sorted(vars(cfg)):
             table.add_row(k, str(getattr(cfg, k)))
-        print(Panel(table, title="Configurations", title_align='left', expand=True, highlight=True, border_style="blue"))
+        print()
+        print(Panel(table, title="Test Configurations", title_align='left', expand=True, highlight=True, border_style="blue"))
     
     failed = False
     try:
