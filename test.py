@@ -60,6 +60,7 @@ class TestConfig:
     use_qemu: bool = False
     parallel: bool = True
     check_ssa: bool = False
+    precise_timing: bool = True
     timeout: int = 10
     extra_cflags: list[str] = field(default_factory=lambda: [envs.io_c])
     
@@ -197,7 +198,7 @@ def execute_with_timing(func: Callable[..., _T], *args, repeat: int = 10, use_la
 
 def run_commands(commands: list[list[str]], *args, **kwargs) -> None: # type: ignore
     for command in commands:
-        subprocess.run(command, capture_output=True, check=True, *args, **kwargs) # type: ignore
+        subprocess.run(command, capture_output=True, check=True, timeout=cfg.timeout, *args, **kwargs) # type: ignore
 
 def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: bool, wrap_main: bool) -> TestResult:
     
@@ -212,17 +213,22 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
         Path(test.filename).with_suffix(".o").name
     )
     try:
-        if wrap_main:
-            run_commands([
-                [compiler, src_file_path, envs.measure_time_c_path, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
-                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
-            ], timeout=cfg.timeout)
+        if cfg.precise_timing:
+            if wrap_main:
+                run_commands([
+                    [compiler, src_file_path, envs.measure_time_c_path, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
+                        (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
+                ])
+            else:
+                run_commands([
+                    [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
+                    [compiler, object_file_path, envs.measure_time_c_path, "-o", executable_file_path] + \
+                        (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
+                ])
         else:
             run_commands([
-                [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
-                [compiler, object_file_path, envs.measure_time_c_path, "-o", executable_file_path] + \
-                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
-            ], timeout=cfg.timeout)
+                [compiler, src_file_path, "-o", executable_file_path] + cfg.extra_cflags,
+            ])
     except subprocess.TimeoutExpired as e:
         return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
     except Exception as e:
@@ -569,13 +575,6 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
     tests = sorted(tests)
     
     if lab == 'lab0':
-        # test coverage
-        try:
-            result = subprocess.run([envs.python, envs.coverage_py, *map(str, tests)], check=True)
-            print(green(f"lab0 coverage test passed."))
-        except:
-            assert False, f"lab0 coverage test failed."
-
         compiler = envs.cc if not cfg.use_qemu else envs.rv32_gcc
         assert compiler is not None, "gcc or clang not found." if not cfg.use_qemu else "riscv32-unknown-elf-gcc not found."
         def check_is_clang(compiler: str) -> bool:
@@ -615,9 +614,15 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
     summary(test_results, source_folder)
 
     if not files and lab == 'lab0':
+        # test coverage
+        try:
+            result = subprocess.run([envs.python, envs.coverage_py, *map(lambda x: x.filename, tests)], check=True)
+            print(green(f"lab0 coverage test passed."))
+        except:
+            assert False, f"lab0 coverage test failed."
         global test_score
-        test_score = min(100, 100 * test_score / 5)
-        assert len(test_results) >= 5, "lab0 test cases are less than 5."
+        test_score = min(100, 100 * len(tests) / 5)
+        assert len(tests) >= 5, "lab0 test cases are less than 5."
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test your compiler.")
@@ -635,6 +640,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-qemu", "--use_qemu", "--qemu", type=str2bool, nargs='?', const=True, help="Use qemu-riscv32 to run tests.")
     parser.add_argument("--parallel", type=str2bool, nargs='?', const=True, help="Run tests in parallel.")
     parser.add_argument("--check-ssa", "--check_ssa", type=str2bool, nargs='?', const=True, help="Check SSA form in lab3.")
+    parser.add_argument("--precise-timing", "--precise_timing", type=str2bool, nargs='?', const=True, help="Measure precise timing (build with measure_time.c).")
     parser.add_argument("--timeout", type=int, help="Timeout for each test case.")
     parser.add_argument("--extra-cflags", "--extra_cflags", nargs='*', help="Extra cflags for gcc/clang.")
     
