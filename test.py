@@ -145,7 +145,6 @@ class TestResult:
                  test: Test,
                  output: str | None | list[str] = None,
                  result_type: ResultType | None = None,
-                 concat_output: bool = False,
                  run_time: float | None = None,
                  run_time_type: TimeType = TimeType.STEPS,
                  error: Exception | None = None
@@ -164,11 +163,7 @@ class TestResult:
                 if test.expected is None:
                     self.result = ResultType.WRONG_ANSWER if output else ResultType.ACCEPTED
                 else:
-                    if not concat_output:  # lab3
-                        self.result = ResultType.ACCEPTED if output == test.expected else ResultType.WRONG_ANSWER
-                    else:  # lab4
-                        expected = "".join(test.expected)
-                        self.result = ResultType.ACCEPTED if output == expected else ResultType.WRONG_ANSWER
+                    self.result = ResultType.ACCEPTED if output == test.expected else ResultType.WRONG_ANSWER
 
 _T = TypeVar("_T")
 def execute_with_timing(func: Callable[..., _T], *args, repeat: int = 10, use_last: int = 5, **kwargs) -> tuple[list[_T], list[float]]: # type: ignore
@@ -376,6 +371,8 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
                 timeout=cfg.timeout,
                 check=True
             )
+            output = result.stdout.strip().split("\n")[:-1]  # remove the last line "Exit with code {exit_code} within {run_step} steps."
+            output = [line.strip() for line in output if line.strip() != ""]
             result_step = subprocess.run(
                 [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
                 input="\n".join(test.inputs) if test.inputs is not None else None,
@@ -385,7 +382,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
                 check=True
             )
             run_step = int(result_step.stdout.strip())
-            return TestResult(test, result.stdout.strip().split("\n")[0], concat_output=True, run_time=run_step, run_time_type=TimeType.STEPS)
+            return TestResult(test, output, run_time=run_step, run_time_type=TimeType.STEPS)
         except subprocess.TimeoutExpired as e:
             return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
         except Exception as e:
