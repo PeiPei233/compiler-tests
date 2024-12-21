@@ -484,7 +484,7 @@ def summary(test_results: list[TestResult], source_folder: str):
                     returncode = test_result.error.returncode
                     if returncode and returncode < 0:
                         try:
-                            return_text = f"{signal.Signals(-returncode)} ({returncode})"
+                            return_text = f"{str(signal.Signals(-returncode))} ({returncode})"
                         except ValueError:
                             return_text = f"{returncode}"
                     else:
