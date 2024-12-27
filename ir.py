@@ -322,6 +322,7 @@ class Dec(IRNode):
     def __init__(self, name, token):
         self.name = name
         self.size = int(token.value)
+        assert self.size % 4 == 0, "Array size should be multiple of 4."
 
     def __str__(self) -> str:
         return f"Dec {self.name} #{self.size}"
@@ -349,25 +350,23 @@ class Global(IRNode):
     """ Define a global variable """
 
     name: Token
+    size: int
+    values: list[int]
 
-    def __init__(self, name):
+    def __init__(self, name, *args):
         self.name = name
+        self.size = int(args[0].value)
+        assert self.size % 4 == 0, "Array size should be multiple of 4."
+        if len(args) > 1:
+            self.values = [int(arg.value) for arg in args[1:]]
+        else:
+            self.values = [0] * (self.size // 4)
+        assert len(self.values) * 4 == self.size, "Values size should be equal to array size."  
 
     def __str__(self) -> str:
-        return f"Global {self.name}:"
-    
-@dataclass
-class Fillw(IRNode):
-    """ Fill word to current address """
+        values = ", ".join([f"#{v}" for v in self.values])
+        return f"Global {self.name} #{self.size} = {values}"
 
-    value: int
-
-    def __init__(self, token):
-        self.value = int(token.value)
-
-    def __str__(self) -> str:
-        return f".word #{self.value}"
-    
 @dataclass
 class Phi(IRNode):
     """ Phi node """
@@ -434,8 +433,7 @@ start: instruction*
     | "FUNCTION" NAME ":" -> function
     | "DEC" NAME "#" SIGNED_INT -> dec
     | NAME "=" "&" NAME -> la
-    | "GLOBAL" NAME ":" -> global
-    | ".WORD" "#" SIGNED_INT -> fillw
+    | "GLOBAL" NAME ":" "#" SIGNED_INT ("=" "#" SIGNED_INT ("," "#" SIGNED_INT)*)? -> global
     | NAME "=" "PHI" "[" NAME "," NAME "]" ("," "[" NAME "," NAME "]")* -> phi
 
 ?relop : "<" -> lt
@@ -721,7 +719,6 @@ class FunctionFrame:
 def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
     frames = []
     global_var: dict[str, list[int]] = {}
-    current_var = None
     def_vars = set()
     is_block_entry = False
     have_phi = False
@@ -740,18 +737,12 @@ def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
             frames.append(frame)
             global_env[ir.name] = frame
             frames[-1].add_code(ir)
-            current_var = None
             is_block_entry = True
             def_vars.clear()
         elif isinstance(ir, Global):
             if frames:
                 raise SyntaxError("Global variable should be defined before function.")
-            global_var[ir.name] = []
-            current_var = ir.name
-        elif isinstance(ir, Fillw):
-            if current_var is None:
-                raise SyntaxError("No global variable to fill")
-            global_var[current_var].append(ir.value)
+            global_var[ir.name] = ir.values
         elif isinstance(ir, Label):
             is_block_entry = True
             frames[-1].add_code(ir)
