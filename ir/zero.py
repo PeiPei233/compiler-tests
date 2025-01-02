@@ -793,7 +793,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("file", type=str, help="The IR file to interpret.")
     arg_parser.add_argument("-d", "--debug", action="store_true",
                             help="Whether to print debug info.")
-    arg_parser.add_argument("-s", "--ssa", action="store_true",
+    arg_parser.add_argument("-s", "--ssa", "--check-ssa", action="store_true",
                             help="Whether to check SSA form.")
     args = arg_parser.parse_args()
     if args.debug:

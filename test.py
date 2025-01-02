@@ -35,7 +35,8 @@ class EnvironmentConfig:
     temp_dir: str = tempfile.mkdtemp()
     output_dir: str = temp_dir
     
-    ir_path: str = os.path.join(test_dir, "ir.py")
+    zero_ir_path: str = os.path.join(test_dir, "ir", "zero.py")
+    accipit_ir_path: str = os.path.join(test_dir, "ir", "accipit.py")
     venus_jar: str = os.path.join(test_dir, "venus.jar")
     coverage_py: str = os.path.join(test_dir, "coverage.py")
     io_c: str = os.path.join(test_dir, "libs", "io.c")
@@ -58,6 +59,7 @@ test_score = 0
 class TestConfig:
     verbose: bool = False
     use_qemu: bool = False
+    use_accipit: bool = False
     parallel: bool = True
     check_ssa: bool = False
     precise_timing: bool = True
@@ -294,9 +296,15 @@ def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
     except Exception as e:
         return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
 
-def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
-    ir_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".zir").name)
-    assert os.path.exists(envs.ir_path), f"{envs.ir_path} not found."
+def run_with_ir(compiler: str, test: Test, accipit: bool) -> TestResult:  # lab3
+    ir_file_path = os.path.join(
+        envs.output_dir,
+        Path(test.filename).with_suffix(
+            ".acc" if accipit else ".zir"
+        ).name
+    )
+    ir_path = envs.accipit_ir_path if accipit else envs.zero_ir_path
+    assert os.path.exists(ir_path), f"{ir_path} not found."
     assert test.expected is not None, f"{test.filename} has no expected output."
     try:
         result = subprocess.run(
@@ -311,7 +319,7 @@ def run_with_ir(compiler: str, test: Test) -> TestResult:  # lab3
         
     try:
         result = subprocess.run(
-            [envs.python, envs.ir_path, ir_file_path] + (["--ssa"] if cfg.check_ssa else []),
+            [envs.python, ir_path, ir_file_path] + (["--ssa"] if cfg.check_ssa and not accipit else []),
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
@@ -587,7 +595,7 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
         'lab0': partial(run_with_src, qemu=cfg.use_qemu, is_clang=is_clang),
         'lab1': run_only_compiler,
         'lab2': run_only_compiler,
-        'lab3': run_with_ir,
+        'lab3': partial(run_with_ir, accipit=cfg.use_accipit),
         'lab4': partial(run_with_asm, qemu=cfg.use_qemu),
         'bonus1': partial(run_with_asm, qemu=cfg.use_qemu),
         'bonus2': partial(run_with_asm, qemu=cfg.use_qemu),
@@ -635,6 +643,7 @@ if __name__ == "__main__":
     str2bool: Callable[[str], bool] = lambda x: x.lower() in {'true', 't', 'yes', 'y', '1'}
     parser.add_argument("-v", "--verbose", type=str2bool, nargs='?', const=True, help="Print detailed error messages.")
     parser.add_argument("--use-qemu", "--use_qemu", "--qemu", type=str2bool, nargs='?', const=True, help="Use qemu-riscv32 to run tests.")
+    parser.add_argument("--use-accipit", "--use_accipit", "--accipit", type=str2bool, nargs='?', const=True, help="Use Accipit IR instead of Zero IR to run tests.")
     parser.add_argument("--parallel", type=str2bool, nargs='?', const=True, help="Run tests in parallel.")
     parser.add_argument("--check-ssa", "--check_ssa", type=str2bool, nargs='?', const=True, help="Check SSA form in lab3.")
     parser.add_argument("--precise-timing", "--precise_timing", type=str2bool, nargs='?', const=True, help="Measure precise timing (build with measure_time.c).")
