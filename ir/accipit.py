@@ -15,11 +15,8 @@ STEP = 0
 DEBUG = False
 
 class IRNode():
-    def method_wrapper(self, func):
+    def method_wrapper(self, func, step: int):
         def wrapper(*args, **kwargs):
-            global STEP
-            step = STEP
-            STEP = STEP + 1
             name = self.__str__().split('\n')[0]
             print(f"[STEP {step}. Evaluating {name} with args={args}]")
             result = func(*args, **kwargs)
@@ -29,8 +26,12 @@ class IRNode():
     
     def __getattribute__(self, name):
         obj = super().__getattribute__(name)
-        if DEBUG and callable(obj) and name == "eval":
-            return self.method_wrapper(obj)
+        if name == "eval":
+            global STEP
+            step = STEP
+            STEP = STEP + 1
+            if DEBUG and callable(obj):
+                return self.method_wrapper(obj, step)
         return obj
 
     def __str__(self):
@@ -278,7 +279,7 @@ class Br(IRNode, Ast):
     label1: Ident
     label2: Ident
     
-    def eval(self) -> BasicBlock:
+    def eval(self) -> int:
         target = self.label1 if self.cond.eval() else self.label2
         return env.get(target).eval()
     
@@ -286,12 +287,12 @@ class Br(IRNode, Ast):
 class Jmp(IRNode, Ast):
     label: Ident
     
-    def eval(self) -> BasicBlock:
+    def eval(self) -> int:
         return env.get(self.label).eval()
 
 @dataclass
 class Ret(IRNode):
-    value: Value
+    value: IntConst | Ident | UnitConst
     
     def eval(self) -> Value:
         return self.value.eval()
@@ -306,7 +307,7 @@ class PList(IRNode):
     def __str__(self):
         return ", ".join(f"{name}: {tpe}" for name, tpe in self.params)
     
-    def eval(self, values: list[Value]):
+    def eval(self, values: list[Ident | IntConst]):
         values = [value.eval() for value in values]
         env.push_frame()
         for (name, _), value in zip(self.params, values):
@@ -321,7 +322,7 @@ class BasicBlock(IRNode):
     def __str__(self):
         return f"{self.label}:\n" + "\n".join(str(binding) for binding in self.bindings) + f"\n{self.terminator}"
     
-    def eval(self) -> int:
+    def eval(self) -> int | UnitConst:
         for binding in self.bindings:
             binding.eval()
         return self.terminator.eval()
@@ -340,9 +341,9 @@ class GlobalDecl:
     name: Ident
     tpe: Type
     size: IntConst
-    values: list[Value]
+    values: list[IntConst]
     
-    def __init__(self, name: Ident, tpe: Type, size: IntConst, values: list[Value]):
+    def __init__(self, name: Ident, tpe: Type, size: IntConst, values: list[IntConst]):
         self.name = name
         self.tpe = tpe
         self.size = size
@@ -494,8 +495,8 @@ def parse(file: str) -> Program:
     with open(file) as f:
         text = f.read()
     try:
-        parsed_result = parser.parse(text)
-        return parsed_result
+        result: Program = parser.parse(text)
+        return result
     except UnexpectedInput as e:
         print(e.get_context(text))
         print(f"Syntax error at position {e.column}: {e}")
@@ -515,5 +516,5 @@ if __name__ == "__main__":
         raise SemanticError("Main function is not defined.")
     return_value = main.eval([])
     colored_return_value = f"\033[1;32m{return_value}\033[0m" if return_value == 0 else f"\033[1;31m{return_value}\033[0m"
-    print(f'Exit with code {colored_return_value}.')
+    print(f'Exit with code {colored_return_value} within {STEP} steps.')
     exit(return_value)
