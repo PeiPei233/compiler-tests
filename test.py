@@ -423,6 +423,17 @@ def summary(test_results: list[TestResult], source_folder: str):
                 return f"{run_time/1e9:.2f} s"
         else:
             raise ValueError("Invalid TimeType.")
+        
+    def truncate_lines(s: str, show_lines: int = 10) -> str:
+        lines = s.split("\n")
+        if len(lines) <= show_lines * 3:
+            return s
+        omitted = len(lines) - show_lines * 2
+        return "\n".join(
+            lines[:show_lines] + \
+            [f"[dim]... {omitted} lines omitted ...[/dim]"] + \
+            lines[-show_lines:]
+        )
 
     if cfg.verbose:
         for test_result in test_results:
@@ -455,7 +466,7 @@ def summary(test_results: list[TestResult], source_folder: str):
                     # Highlight diff using Syntax
                     diff_text = "\n".join(diff)
                     if diff_text.strip():
-                        diff_syntax = Syntax(diff_text, "diff", line_numbers=False)
+                        diff_syntax = Syntax(truncate_lines(diff_text), "diff", line_numbers=False)
                     else:
                         diff_syntax = "[dim]No differences found[/dim]"
 
@@ -492,8 +503,8 @@ def summary(test_results: list[TestResult], source_folder: str):
                     table.add_column()
                     table.add_row("command", str(test_result.error.cmd))
                     table.add_row("exit code", return_text)
-                    table.add_row("stdout", stdout)
-                    table.add_row("stderr", stderr)
+                    table.add_row("stdout", truncate_lines(stdout))
+                    table.add_row("stderr", truncate_lines(stderr))
                     print()
                     print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
                 elif isinstance(test_result.error, subprocess.TimeoutExpired):
@@ -512,8 +523,8 @@ def summary(test_results: list[TestResult], source_folder: str):
                     table.add_column()
                     table.add_row("command", str(test_result.error.cmd))
                     table.add_row("Timeout", f"{test_result.error.timeout} seconds")
-                    table.add_row("stdout", stdout)
-                    table.add_row("stderr", stderr)
+                    table.add_row("stdout", truncate_lines(stdout))
+                    table.add_row("stderr", truncate_lines(stderr))
                     print()
                     print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
                 else:
