@@ -21,10 +21,12 @@ import toml
 from rich import print
 from rich.table import Table
 from rich.progress import track
-from rich.traceback import Traceback
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.console import Group, RenderableType
+
+from rich.traceback import install
+install()
 
 ### Settings ###
 
@@ -689,9 +691,7 @@ if __name__ == "__main__":
     failed = False
     try:
         test_lab(repo_path, lab, files)
-    except Exception as e:
-        if cfg.verbose and not isinstance(e, AssertionError):
-            print(Traceback())
+    except AssertionError as e:
         print(red(f"Error: {e}"))
         failed = True
     if not files:
