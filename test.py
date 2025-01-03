@@ -206,12 +206,12 @@ def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., Te
         # except AssertionError:
         #     raise
         except subprocess.TimeoutExpired as e:
-            if e.cmd[0] == compiler:
+            if isinstance(e.cmd, list) and e.cmd[0] == compiler:
                 return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
             else:
                 return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
         except subprocess.CalledProcessError as e:
-            if e.cmd[0] == compiler:
+            if isinstance(e.cmd, list) and e.cmd[0] == compiler:
                 return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
             else:
                 return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
