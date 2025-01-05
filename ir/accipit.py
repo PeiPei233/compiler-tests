@@ -15,22 +15,27 @@ STEP = 0
 DEBUG = False
 
 class IRNode():
-    def method_wrapper(self, func):
+    wrap = True
+    return_msg = ""
+    def method_wrapper(self, func, step: int):
         def wrapper(*args, **kwargs):
-            global STEP
-            step = STEP
-            STEP = STEP + 1
-            name = self.__str__().split('\n')[0]
-            print(f"[STEP {step}. Evaluating {name} with args={args}]")
+            name = self.__str__().split('\n')[0].strip().rstrip("{").strip()
+            prefix = f"STEP {step}.".ljust(10)
+            print(f"{prefix} \033[1;32mEval\033[0m   {name} with args={args}")
             result = func(*args, **kwargs)
-            print(f"[STEP {step}. Returned {result}]")
+            msg = self.return_msg if self.return_msg else f"\033[1;33mReturn {result}\033[0m for {name}"
+            print(f"{prefix} {msg}")
             return result
         return wrapper
     
     def __getattribute__(self, name):
         obj = super().__getattribute__(name)
-        if DEBUG and callable(obj) and name == "eval":
-            return self.method_wrapper(obj)
+        if name == "eval" and self.wrap:
+            global STEP
+            step = STEP
+            STEP = STEP + 1
+            if DEBUG and callable(obj):
+                return self.method_wrapper(obj, step)
         return obj
 
     def __str__(self):
@@ -217,6 +222,7 @@ class Load(IRNode, Ast):
 
 @dataclass
 class Store(IRNode, Ast):
+    wrap = False
     value: Ident
     name: Ident
     
@@ -271,6 +277,7 @@ class ValueBinding(IRNode):
     def eval(self):
         value = self.op.eval()
         env.add_local(self.name, value)
+        self.return_msg = f"\033[1;33mBind  \033[0m {value} to {self.name}"
         
 @dataclass
 class Br(IRNode, Ast):
@@ -278,7 +285,7 @@ class Br(IRNode, Ast):
     label1: Ident
     label2: Ident
     
-    def eval(self) -> BasicBlock:
+    def eval(self) -> int:
         target = self.label1 if self.cond.eval() else self.label2
         return env.get(target).eval()
     
@@ -286,12 +293,12 @@ class Br(IRNode, Ast):
 class Jmp(IRNode, Ast):
     label: Ident
     
-    def eval(self) -> BasicBlock:
+    def eval(self) -> int:
         return env.get(self.label).eval()
 
 @dataclass
 class Ret(IRNode):
-    value: Value
+    value: IntConst | Ident | UnitConst
     
     def eval(self) -> Value:
         return self.value.eval()
@@ -301,12 +308,13 @@ Terminator = Union[Br, Jmp, Ret]
 
 @dataclass
 class PList(IRNode):
+    wrap = False
     params: list[tuple[Ident, Type]]
     
     def __str__(self):
-        return ", ".join(f"{name}: {tpe}" for name, tpe in self.params)
+        return "(" + ", ".join(f"{name}: {tpe}" for name, tpe in self.params) + ")"
     
-    def eval(self, values: list[Value]):
+    def eval(self, values: list[Ident | IntConst]):
         values = [value.eval() for value in values]
         env.push_frame()
         for (name, _), value in zip(self.params, values):
@@ -314,6 +322,7 @@ class PList(IRNode):
     
 @dataclass
 class BasicBlock(IRNode):
+    wrap = False
     label: Ident
     bindings: list[ValueBinding]
     terminator: Terminator
@@ -321,13 +330,14 @@ class BasicBlock(IRNode):
     def __str__(self):
         return f"{self.label}:\n" + "\n".join(str(binding) for binding in self.bindings) + f"\n{self.terminator}"
     
-    def eval(self) -> int:
+    def eval(self) -> int | UnitConst:
         for binding in self.bindings:
             binding.eval()
         return self.terminator.eval()
     
 @dataclass
 class Body(IRNode):
+    wrap = False
     bbs: list[BasicBlock]
     
     def __str__(self):
@@ -340,9 +350,9 @@ class GlobalDecl:
     name: Ident
     tpe: Type
     size: IntConst
-    values: list[Value]
+    values: list[IntConst]
     
-    def __init__(self, name: Ident, tpe: Type, size: IntConst, values: list[Value]):
+    def __init__(self, name: Ident, tpe: Type, size: IntConst, values: list[IntConst]):
         self.name = name
         self.tpe = tpe
         self.size = size
@@ -494,8 +504,8 @@ def parse(file: str) -> Program:
     with open(file) as f:
         text = f.read()
     try:
-        parsed_result = parser.parse(text)
-        return parsed_result
+        result: Program = parser.parse(text)
+        return result
     except UnexpectedInput as e:
         print(e.get_context(text))
         print(f"Syntax error at position {e.column}: {e}")
@@ -503,17 +513,18 @@ def parse(file: str) -> Program:
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="Interpreter for Accipit IR")
-    arg_parser.add_argument("file", type=str, help="The IR file to interpret.")
-    arg_parser.add_argument("-d", "--debug", action="store_true", help="Whether to print debug info.")
+    arg_parser.add_argument("file", type=str, help="the IR file to interpret.")
+    arg_parser.add_argument("-d", "--debug", action="store_true", help="whether to print debug info.")
     args = arg_parser.parse_args()
     program = parse(args.file)
     if args.debug:
         DEBUG = True
         print(f"The parsed AST is:\n{program}")
+        print("\n-----------------The evaluation starts here-----------------\n")
     main = env.global_env.get("@main")
     if main is None or not isinstance(main, FunDefn):
         raise SemanticError("Main function is not defined.")
     return_value = main.eval([])
     colored_return_value = f"\033[1;32m{return_value}\033[0m" if return_value == 0 else f"\033[1;31m{return_value}\033[0m"
-    print(f'Exit with code {colored_return_value}.')
+    print(f'Exit with code {colored_return_value} within {STEP} steps.')
     exit(return_value)
