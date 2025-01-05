@@ -14,17 +14,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 from difflib import unified_diff
 
 import toml
 from rich import print
 from rich.table import Table
 from rich.progress import track
-from rich.traceback import Traceback
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.console import Group, RenderableType
+
+from rich.traceback import install
+install()
 
 ### Settings ###
 
@@ -63,7 +65,7 @@ class TestConfig:
     parallel: bool = True
     check_ssa: bool = False
     precise_timing: bool = True
-    timeout: int = 10
+    timeout: float = 10.0
     extra_cflags: list[str] = field(default_factory=lambda: [envs.io_c])
     
 cfg = TestConfig()
@@ -118,10 +120,10 @@ class Test:
             assert "Output:" in comments[1], f"{filename} has non-paired input/output"
             input = comments[0].replace("Input:", "").split()
             if input[0] == "None":
-                input = None
+                input = []
             expected = comments[1].replace("Output:", "").split()
             if expected[0] == "None":
-                expected = None
+                expected = []
             return Test(filename, input, expected, False)
         else:
             assert False, f"{filename} heading comment is invalid"
@@ -168,7 +170,7 @@ class TestResult:
                     self.result = ResultType.ACCEPTED if output == test.expected else ResultType.WRONG_ANSWER
 
 _T = TypeVar("_T")
-def execute_with_timing(func: Callable[..., _T], *args, repeat: int = 10, use_last: int = 5, **kwargs) -> tuple[list[_T], list[float]]: # type: ignore
+def execute_with_timing(func: Callable[..., _T], *args: Any, repeat: int = 10, use_last: int = 5, **kwargs: Any) -> tuple[list[_T], list[float]]:
     """
     Run a function multiple times and return the results and times.
 
@@ -193,12 +195,32 @@ def execute_with_timing(func: Callable[..., _T], *args, repeat: int = 10, use_la
 
     return results[-use_last:], times[-use_last:]
 
-def run_commands(commands: list[list[str]], *args, **kwargs) -> None: # type: ignore
+def run_commands(commands: list[list[str]], *args: Any, **kwargs: Any) -> None:
     for command in commands:
-        subprocess.run(command, capture_output=True, check=True, timeout=cfg.timeout, *args, **kwargs) # type: ignore
+        subprocess.run(command, capture_output=True, check=True, timeout=cfg.timeout, *args, **kwargs)
 
-def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: bool, wrap_main: bool) -> TestResult:
-    
+def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., TestResult]:
+    def wrapper(compiler: str, test: Test, *args: Any, **kwargs: Any) -> TestResult:
+        try:
+            return func(compiler, test, *args, **kwargs)
+        # except AssertionError:
+        #     raise
+        except subprocess.TimeoutExpired as e:
+            if isinstance(e.cmd, list) and e.cmd[0] == compiler:
+                return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
+            else:
+                return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
+        except subprocess.CalledProcessError as e:
+            if isinstance(e.cmd, list) and e.cmd[0] == compiler:
+                return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
+            else:
+                return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
+        # except Exception as e:
+        #     return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
+    return wrapper
+
+@test_exception_handling
+def compile_run_result(compiler: str, test: Test, src_file_path: str, use_qemu: bool, wrap_main: bool) -> TestResult:
     executable_file_path = os.path.join(
         envs.output_dir,
         Path(test.filename).with_suffix(
@@ -209,93 +231,80 @@ def compile_run_result(compiler: str, src_file_path: str, test: Test, use_qemu: 
         envs.output_dir,
         Path(test.filename).with_suffix(".o").name
     )
-    try:
-        if cfg.precise_timing:
-            if wrap_main:
-                run_commands([
-                    [compiler, src_file_path, envs.measure_time_c_path, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
-                        (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
-                ])
-            else:
-                run_commands([
-                    [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
-                    [compiler, object_file_path, envs.measure_time_c_path, "-o", executable_file_path] + \
-                        (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
-                ])
+    if cfg.precise_timing:
+        if wrap_main:
+            run_commands([
+                [compiler, src_file_path, envs.measure_time_c_path, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
+                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
+            ])
         else:
             run_commands([
-                [compiler, src_file_path, "-o", executable_file_path] + cfg.extra_cflags,
+                [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
+                [compiler, object_file_path, envs.measure_time_c_path, "-o", executable_file_path] + \
+                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
             ])
-    except subprocess.TimeoutExpired as e:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
-    except Exception as e:
-        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
+    else:
+        run_commands([
+            [compiler, src_file_path, "-o", executable_file_path] + cfg.extra_cflags,
+        ])
 
-    input_str = "\n".join(test.inputs) if test.inputs is not None else None
-    
     if use_qemu:
         assert envs.rv32_qemu is not None, "qemu-riscv32 not found."
         cmd = [envs.rv32_qemu, executable_file_path]
     else:
         cmd = [executable_file_path]
-    try:
-        results, run_times = execute_with_timing(
-            subprocess.run,
-            cmd,
-            input=input_str,
-            capture_output=True,
-            text=True,
-            timeout=cfg.timeout,
-            check=True,
-        )
-        sample_result = results[-1]
-        sample_output = sample_result.stdout.strip().split("\n")
-        # case 1: Execution time: %llu cycles
-        match = re.search(r"Execution time: (\d+) cycles", sample_output[-1])
-        if match:
-            cycles: list[int] = []
-            for result in results:
-                output = result.stdout.strip().split("\n")
-                time_line = output[-1]
-                match = re.search(r"Execution time: (\d+) cycles", time_line)
-                assert match, "Execution time not found."
-                cycles.append(int(match.group(1)))
-            return TestResult(test, sample_output[:-1], run_time=sum(cycles) / len(cycles), run_time_type=TimeType.CYCLES)
-        # case 2: Execution time: %ld s %ld ns
-        match = re.search(r"Execution time: (\d+) s (\d+) ns", sample_output[-1])
-        if match:
-            times: list[int] = []
-            for result in results:
-                output = result.stdout.strip().split("\n")
-                time_line = output[-1]
-                match = re.search(r"Execution time: (\d+) s (\d+) ns", time_line)
-                assert match, "Execution time not found."
-                times.append(int(int(match.group(1)) * 1e9 + int(match.group(2))))
-            return TestResult(test, sample_output[:-1], run_time=sum(times) / len(times), run_time_type=TimeType.NANOSECONDS)
-        # case 3: no match, use run_times avg
-        return TestResult(test, sample_output, run_time=int(sum(run_times) / len(run_times) * 1e9), run_time_type=TimeType.NANOSECONDS)
-    except subprocess.TimeoutExpired as e:
-        return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
-    except Exception as e:
-        return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
+ 
+    results, run_times = execute_with_timing(
+        subprocess.run,
+        cmd,
+        input="\n".join(test.inputs) if test.inputs is not None else None,
+        capture_output=True,
+        text=True,
+        timeout=cfg.timeout,
+        check=True,
+    )
+    sample_result = results[-1]
+    sample_output = sample_result.stdout.strip().split("\n")
+    # case 1: Execution time: %llu cycles
+    match = re.search(r"Execution time: (\d+) cycles", sample_output[-1])
+    if match:
+        cycles: list[int] = []
+        for result in results:
+            output = result.stdout.strip().split("\n")
+            time_line = output[-1]
+            match = re.search(r"Execution time: (\d+) cycles", time_line)
+            assert match, "Execution time not found."
+            cycles.append(int(match.group(1)))
+        return TestResult(test, sample_output[:-1], run_time=sum(cycles) / len(cycles), run_time_type=TimeType.CYCLES)
+    # case 2: Execution time: %ld s %ld ns
+    match = re.search(r"Execution time: (\d+) s (\d+) ns", sample_output[-1])
+    if match:
+        times: list[int] = []
+        for result in results:
+            output = result.stdout.strip().split("\n")
+            time_line = output[-1]
+            match = re.search(r"Execution time: (\d+) s (\d+) ns", time_line)
+            assert match, "Execution time not found."
+            times.append(int(int(match.group(1)) * 1e9 + int(match.group(2))))
+        return TestResult(test, sample_output[:-1], run_time=sum(times) / len(times), run_time_type=TimeType.NANOSECONDS)
+    # case 3: no match, use run_times avg
+    return TestResult(test, sample_output, run_time=int(sum(run_times) / len(run_times) * 1e9), run_time_type=TimeType.NANOSECONDS)
 
+@test_exception_handling
 def run_with_src(compiler: str, test: Test, qemu: bool = False, is_clang: bool = False) -> TestResult:  # lab0
     assert test.expected is not None, f"{test.filename} has no expected output."
     src_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".c").name)
     shutil.copy(test.filename, src_file_path)
     
-    return compile_run_result(compiler, src_file_path, test, qemu, wrap_main=not is_clang)
-        
+    return compile_run_result(compiler, test, src_file_path, qemu, wrap_main=not is_clang)
+
+@test_exception_handling
 def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
     assert test.inputs is None, "Not implemented input for lab1 or lab2"
-    try:
-        subprocess.run([compiler, test.filename], capture_output=True, timeout=cfg.timeout, check=True)
-        return TestResult(test, result_type=ResultType.ACCEPTED)
-    except subprocess.TimeoutExpired as e:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
-    except Exception as e:
-        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
+    subprocess.run([compiler, test.filename], capture_output=True, timeout=cfg.timeout, check=True)
+    return TestResult(test, result_type=ResultType.ACCEPTED)
 
+@test_exception_handling
 def run_with_ir(compiler: str, test: Test, accipit: bool) -> TestResult:  # lab3
     ir_file_path = os.path.join(
         envs.output_dir,
@@ -306,101 +315,82 @@ def run_with_ir(compiler: str, test: Test, accipit: bool) -> TestResult:  # lab3
     ir_path = envs.accipit_ir_path if accipit else envs.zero_ir_path
     assert os.path.exists(ir_path), f"{ir_path} not found."
     assert test.expected is not None, f"{test.filename} has no expected output."
-    try:
+    result = subprocess.run(
+        [compiler, test.filename, ir_file_path, '--ir'],  # add --ir flag
+        capture_output=True,
+        check=True,
+        timeout=cfg.timeout)
+    
+    result = subprocess.run(
+        [envs.python, ir_path, ir_file_path] + (["--ssa"] if cfg.check_ssa and not accipit else []),
+        input="\n".join(test.inputs) if test.inputs is not None else None,
+        capture_output=True,
+        text=True,
+        timeout=cfg.timeout,
+        check=True
+    )
+    output = result.stdout.split("\n")
+    output = [line.strip() for line in output if line.strip() != ""]
+    if output:
+        # extract run step in the last line "Exit with code {exit_code} within {run_step} steps."
+        match = re.search(r"within (\d+) steps", output[-1])
+        if match:
+            run_step = int(match.group(1))
+        else:
+            run_step = None
+        output = output[:-1]
+    else:
+        run_step = None
+    return TestResult(test, output, run_time=run_step, run_time_type=TimeType.STEPS)
+
+@test_exception_handling
+def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab4
+    assert test.expected is not None, f"{test.filename} has no expected output."
+
+    # compile to assembly
+    assembly_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".S").name)
+    subprocess.run(
+        [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
+        capture_output=True,
+        timeout=cfg.timeout,
+        check=True
+    )
+    
+    if qemu:
+        assert envs.rv32_gcc is not None, "riscv32-unknown-elf-gcc not found."
+        assert envs.rv32_qemu is not None, "qemu-riscv32 not found."
+
+        return compile_run_result(envs.rv32_gcc, test, assembly_file_path, use_qemu=True, wrap_main=True)    
+    else:   # run with venus
+        assert envs.java is not None, "java not found."
+        assert os.path.exists(envs.venus_jar), f"{envs.venus_jar} not found."
+
         result = subprocess.run(
-            [compiler, test.filename, ir_file_path, '--ir'],  # add --ir flag
-            capture_output=True,
-            check=True,
-            timeout=cfg.timeout)
-    except subprocess.TimeoutExpired as e:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
-    except Exception as e:
-        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
-        
-    try:
-        result = subprocess.run(
-            [envs.python, ir_path, ir_file_path] + (["--ssa"] if cfg.check_ssa and not accipit else []),
+            [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-ms', '-1'],         # -ms -1: ignore max step limit
             input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
             text=True,
             timeout=cfg.timeout,
             check=True
         )
-        output = result.stdout.split("\n")
+        output = result.stdout.strip().split("\n")[:-1]  # remove the last line "Exit with code {exit_code} within {run_step} steps."
         output = [line.strip() for line in output if line.strip() != ""]
-        if output:
-            # extract run step in the last line "Exit with code {exit_code} within {run_step} steps."
-            match = re.search(r"within (\d+) steps", output[-1])
-            if match:
-                run_step = int(match.group(1))
-            else:
-                run_step = None
-            output = output[:-1]
-        else:
-            run_step = None
-        return TestResult(test, output, run_time=run_step, run_time_type=TimeType.STEPS)
-    except subprocess.TimeoutExpired as e:
-        return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
-    except Exception as e:
-        return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
-
-def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab4
-    assert test.expected is not None, f"{test.filename} has no expected output."
-
-    # compile to assembly
-    assembly_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".S").name)
-    try:
-        subprocess.run(
-            [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
+        result_step = subprocess.run(
+            [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
+            input="\n".join(test.inputs) if test.inputs is not None else None,
             capture_output=True,
+            text=True,
             timeout=cfg.timeout,
             check=True
         )
-    except subprocess.TimeoutExpired as e:
-        return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
-    except Exception as e:
-        return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
-    
-    if qemu:
-        assert envs.rv32_gcc is not None, "riscv32-unknown-elf-gcc not found."
-        assert envs.rv32_qemu is not None, "qemu-riscv32 not found."
-
-        return compile_run_result(envs.rv32_gcc, assembly_file_path, test, use_qemu=True, wrap_main=True)    
-    else:   # run with venus
-        assert envs.java is not None, "java not found."
-        assert os.path.exists(envs.venus_jar), f"{envs.venus_jar} not found."
-
-        try:
-            result = subprocess.run(
-                [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-ms', '-1'],         # -ms -1: ignore max step limit
-                input="\n".join(test.inputs) if test.inputs is not None else None,
-                capture_output=True,
-                text=True,
-                timeout=cfg.timeout,
-                check=True
-            )
-            output = result.stdout.strip().split("\n")[:-1]  # remove the last line "Exit with code {exit_code} within {run_step} steps."
-            output = [line.strip() for line in output if line.strip() != ""]
-            result_step = subprocess.run(
-                [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
-                input="\n".join(test.inputs) if test.inputs is not None else None,
-                capture_output=True,
-                text=True,
-                timeout=cfg.timeout,
-                check=True
-            )
-            run_step = int(result_step.stdout.strip())
-            return TestResult(test, output, run_time=run_step, run_time_type=TimeType.STEPS)
-        except subprocess.TimeoutExpired as e:
-            return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
-        except Exception as e:
-            return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
+        run_step = int(result_step.stdout.strip())
+        return TestResult(test, output, run_time=run_step, run_time_type=TimeType.STEPS)
 
 def summary(test_results: list[TestResult], source_folder: str):
     assert len(test_results) > 0, "no tests found."
 
-    def path_to_print(path: str) -> str: # type: ignore
-        path: Path = Path(path)
+    def path_to_print(path_str: str) -> str:
+        path: Path = Path(path_str)
         if path.is_relative_to(envs.test_dir):
             return path.relative_to(envs.test_dir).as_posix()
         elif path.is_relative_to(Path(source_folder)):
@@ -435,6 +425,17 @@ def summary(test_results: list[TestResult], source_folder: str):
                 return f"{run_time/1e9:.2f} s"
         else:
             raise ValueError("Invalid TimeType.")
+        
+    def truncate_lines(s: str, show_lines: int = 10) -> str:
+        lines = s.split("\n")
+        if len(lines) <= show_lines * 3:
+            return s
+        omitted = len(lines) - show_lines * 2
+        return "\n".join(
+            lines[:show_lines] + \
+            [f"[dim]... {omitted} lines omitted ...[/dim]"] + \
+            lines[-show_lines:]
+        )
 
     if cfg.verbose:
         for test_result in test_results:
@@ -467,7 +468,7 @@ def summary(test_results: list[TestResult], source_folder: str):
                     # Highlight diff using Syntax
                     diff_text = "\n".join(diff)
                     if diff_text.strip():
-                        diff_syntax = Syntax(diff_text, "diff", line_numbers=False)
+                        diff_syntax = Syntax(truncate_lines(diff_text), "diff", line_numbers=False)
                     else:
                         diff_syntax = "[dim]No differences found[/dim]"
 
@@ -504,8 +505,8 @@ def summary(test_results: list[TestResult], source_folder: str):
                     table.add_column()
                     table.add_row("command", str(test_result.error.cmd))
                     table.add_row("exit code", return_text)
-                    table.add_row("stdout", stdout)
-                    table.add_row("stderr", stderr)
+                    table.add_row("stdout", truncate_lines(stdout))
+                    table.add_row("stderr", truncate_lines(stderr))
                     print()
                     print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
                 elif isinstance(test_result.error, subprocess.TimeoutExpired):
@@ -524,8 +525,8 @@ def summary(test_results: list[TestResult], source_folder: str):
                     table.add_column()
                     table.add_row("command", str(test_result.error.cmd))
                     table.add_row("Timeout", f"{test_result.error.timeout} seconds")
-                    table.add_row("stdout", stdout)
-                    table.add_row("stderr", stderr)
+                    table.add_row("stdout", truncate_lines(stdout))
+                    table.add_row("stderr", truncate_lines(stderr))
                     print()
                     print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
                 else:
@@ -645,9 +646,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-qemu", "--use_qemu", "--qemu", type=str2bool, nargs='?', const=True, help="Use qemu-riscv32 to run tests.")
     parser.add_argument("--use-accipit", "--use_accipit", "--accipit", type=str2bool, nargs='?', const=True, help="Use Accipit IR instead of Zero IR to run tests.")
     parser.add_argument("--parallel", type=str2bool, nargs='?', const=True, help="Run tests in parallel.")
-    parser.add_argument("--check-ssa", "--check_ssa", type=str2bool, nargs='?', const=True, help="Check SSA form in lab3.")
+    parser.add_argument("--check-ssa", "--check_ssa", type=str2bool, nargs='?', const=True, help="Check SSA form in lab3. (Zero IR Only)")
     parser.add_argument("--precise-timing", "--precise_timing", type=str2bool, nargs='?', const=True, help="Measure precise timing (build with measure_time.c).")
-    parser.add_argument("--timeout", type=int, help="Timeout for each test case.")
+    parser.add_argument("--timeout", type=float, help="Timeout for each test case.")
     parser.add_argument("--extra-cflags", "--extra_cflags", nargs='*', help="Extra cflags for gcc/clang.")
     
     args = parser.parse_args()
@@ -664,15 +665,15 @@ if __name__ == "__main__":
     if cfg_path.exists():
         for k, v in toml.load(cfg_path).items():
             if hasattr(cfg, k):
-                assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}."
+                assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}. Expected {type(getattr(cfg, k))}, got {type(v)}."
                 setattr(cfg, k, v)
     
     for k, v in vars(args).items():
         if v is not None and hasattr(cfg, k):
-            assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}."
+            assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}. Expected {type(getattr(cfg, k))}, got {type(v)}."
             setattr(cfg, k, v)
     
-    if cfg.verbose:
+    if cfg.verbose:     # print configurations
         table = Table(show_header=False, box=None, highlight=True)
         table.add_column(justify="right", style="yellow italic")
         table.add_column()
@@ -690,9 +691,7 @@ if __name__ == "__main__":
     failed = False
     try:
         test_lab(repo_path, lab, files)
-    except Exception as e:
-        if cfg.verbose and not isinstance(e, AssertionError):
-            print(Traceback())
+    except AssertionError as e:
         print(red(f"Error: {e}"))
         failed = True
     if not files:

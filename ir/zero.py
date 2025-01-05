@@ -22,7 +22,9 @@ class BinOp(Op):
     Sub = "-"
     Mul = "*"
     Div = "/"
-    Mod = "%"
+    Rem = "%"
+    Sll = "<<"  # 左移
+    Sra = ">>"  # 算术右移
 
 
 class RelOp(Op):
@@ -394,7 +396,7 @@ class ToIR(Transformer):
     def start(self, args): return args
     def mul(self, _): return BinOp.Mul
     def div(self, _): return BinOp.Div
-    def mod(self, _): return BinOp.Mod
+    def rem(self, _): return BinOp.Rem
     def add(self, _): return BinOp.Add
     def sub(self, _): return BinOp.Sub
     def gt(self, _): return RelOp.Gt
@@ -405,6 +407,8 @@ class ToIR(Transformer):
     def ne(self, _): return RelOp.Ne
     def neg(self, _): return UnOp.Neg
     def pos(self, _): return UnOp.Pos
+    def sll(self, _): return BinOp.Sll
+    def sra(self, _): return BinOp.Sra
 
 # -------------------------------- Parser --------------------------------#
 
@@ -447,7 +451,9 @@ start: instruction*
     | "-" -> sub
     | "*" -> mul
     | "/" -> div
-    | "%" -> mod
+    | "%" -> rem
+    | "<<" -> sll
+    | ">>" -> sra
 
 ?unop : "-" -> neg
     | "+" -> pos
@@ -562,7 +568,9 @@ op2func = {
     BinOp.Sub: lambda x, y: x - y,
     BinOp.Mul: lambda x, y: x * y,
     BinOp.Div: lambda x, y: int(x / y),
-    BinOp.Mod: lambda x, y: x % y,
+    BinOp.Rem: lambda x, y: x % y,
+    BinOp.Sll: lambda x, y: x << y,  # 左移
+    BinOp.Sra: lambda x, y: x >> y,  # 算术右移
     # relation op
     RelOp.Gt: lambda x, y: x > y,
     RelOp.Lt: lambda x, y: x < y,
