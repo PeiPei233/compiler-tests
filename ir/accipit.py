@@ -15,18 +15,22 @@ STEP = 0
 DEBUG = False
 
 class IRNode():
+    wrap = True
+    return_msg = ""
     def method_wrapper(self, func, step: int):
         def wrapper(*args, **kwargs):
-            name = self.__str__().split('\n')[0]
-            print(f"[STEP {step}. Evaluating {name} with args={args}]")
+            name = self.__str__().split('\n')[0].strip().rstrip("{").strip()
+            prefix = f"STEP {step}.".ljust(10)
+            print(f"{prefix} \033[1;32mEval\033[0m   {name} with args={args}")
             result = func(*args, **kwargs)
-            print(f"[STEP {step}. Returned {result}]")
+            msg = self.return_msg if self.return_msg else f"\033[1;33mReturn {result}\033[0m for {name}"
+            print(f"{prefix} {msg}")
             return result
         return wrapper
     
     def __getattribute__(self, name):
         obj = super().__getattribute__(name)
-        if name == "eval":
+        if name == "eval" and self.wrap:
             global STEP
             step = STEP
             STEP = STEP + 1
@@ -218,6 +222,7 @@ class Load(IRNode, Ast):
 
 @dataclass
 class Store(IRNode, Ast):
+    wrap = False
     value: Ident
     name: Ident
     
@@ -272,6 +277,7 @@ class ValueBinding(IRNode):
     def eval(self):
         value = self.op.eval()
         env.add_local(self.name, value)
+        self.return_msg = f"\033[1;33mBind  \033[0m {value} to {self.name}"
         
 @dataclass
 class Br(IRNode, Ast):
@@ -302,10 +308,11 @@ Terminator = Union[Br, Jmp, Ret]
 
 @dataclass
 class PList(IRNode):
+    wrap = False
     params: list[tuple[Ident, Type]]
     
     def __str__(self):
-        return ", ".join(f"{name}: {tpe}" for name, tpe in self.params)
+        return "(" + ", ".join(f"{name}: {tpe}" for name, tpe in self.params) + ")"
     
     def eval(self, values: list[Ident | IntConst]):
         values = [value.eval() for value in values]
@@ -315,6 +322,7 @@ class PList(IRNode):
     
 @dataclass
 class BasicBlock(IRNode):
+    wrap = False
     label: Ident
     bindings: list[ValueBinding]
     terminator: Terminator
@@ -329,6 +337,7 @@ class BasicBlock(IRNode):
     
 @dataclass
 class Body(IRNode):
+    wrap = False
     bbs: list[BasicBlock]
     
     def __str__(self):
@@ -504,13 +513,14 @@ def parse(file: str) -> Program:
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="Interpreter for Accipit IR")
-    arg_parser.add_argument("file", type=str, help="The IR file to interpret.")
-    arg_parser.add_argument("-d", "--debug", action="store_true", help="Whether to print debug info.")
+    arg_parser.add_argument("file", type=str, help="the IR file to interpret.")
+    arg_parser.add_argument("-d", "--debug", action="store_true", help="whether to print debug info.")
     args = arg_parser.parse_args()
     program = parse(args.file)
     if args.debug:
         DEBUG = True
         print(f"The parsed AST is:\n{program}")
+        print("\n-----------------The evaluation starts here-----------------\n")
     main = env.global_env.get("@main")
     if main is None or not isinstance(main, FunDefn):
         raise SemanticError("Main function is not defined.")
