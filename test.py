@@ -42,7 +42,7 @@ class EnvironmentConfig:
     venus_jar: str = os.path.join(test_dir, "venus.jar")
     coverage_py: str = os.path.join(test_dir, "coverage.py")
     io_c: str = os.path.join(test_dir, "libs", "io.c")
-    measure_time_c_path: str = os.path.join(test_dir, "libs", "measure_time.c")
+    timer_c_path: str = os.path.join(test_dir, "libs", "timer.c")
     
     python: str = sys.executable
     java: str | None = shutil.which("java")
@@ -220,29 +220,18 @@ def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., Te
     return wrapper
 
 @test_exception_handling
-def compile_run_result(compiler: str, test: Test, src_file_path: str, use_qemu: bool, wrap_main: bool) -> TestResult:
+def compile_run_result(compiler: str, test: Test, src_file_path: str, use_qemu: bool) -> TestResult:
     executable_file_path = os.path.join(
         envs.output_dir,
         Path(test.filename).with_suffix(
             ".exe" if sys.platform.startswith("win") else ""
         ).name
     )
-    object_file_path = os.path.join(
-        envs.output_dir,
-        Path(test.filename).with_suffix(".o").name
-    )
     if cfg.precise_timing:
-        if wrap_main:
-            run_commands([
-                [compiler, src_file_path, envs.measure_time_c_path, "-o", executable_file_path, "-Wl,--wrap=main", "-DWRAP_MAIN"] + \
-                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
-            ])
-        else:
-            run_commands([
-                [compiler, "-c", src_file_path, "-o", object_file_path, "-Dmain=_orig_main", "-Wno-implicit-function-declaration"],
-                [compiler, object_file_path, envs.measure_time_c_path, "-o", executable_file_path] + \
-                    (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
-            ])
+        run_commands([
+            [compiler, src_file_path, envs.timer_c_path, "-o", executable_file_path, "-Wno-implicit-function-declaration"] + \
+                (["-DRV32ASM"] if use_qemu else []) + cfg.extra_cflags,
+        ])
     else:
         run_commands([
             [compiler, src_file_path, "-o", executable_file_path] + cfg.extra_cflags,
@@ -291,12 +280,12 @@ def compile_run_result(compiler: str, test: Test, src_file_path: str, use_qemu: 
     return TestResult(test, sample_output, run_time=int(sum(run_times) / len(run_times) * 1e9), run_time_type=TimeType.NANOSECONDS)
 
 @test_exception_handling
-def run_with_src(compiler: str, test: Test, qemu: bool = False, is_clang: bool = False) -> TestResult:  # lab0
+def run_with_src(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab0
     assert test.expected is not None, f"{test.filename} has no expected output."
     src_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".c").name)
     shutil.copy(test.filename, src_file_path)
     
-    return compile_run_result(compiler, test, src_file_path, qemu, wrap_main=not is_clang)
+    return compile_run_result(compiler, test, src_file_path, qemu)
 
 @test_exception_handling
 def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
@@ -583,17 +572,12 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
     if lab == 'lab0':
         compiler = envs.cc if not cfg.use_qemu else envs.rv32_gcc
         assert compiler is not None, "gcc or clang not found." if not cfg.use_qemu else "riscv32-unknown-elf-gcc not found."
-        def check_is_clang(compiler: str) -> bool:
-            result = subprocess.run([compiler, "--version"], capture_output=True, text=True)
-            return "clang" in result.stdout
-        is_clang = check_is_clang(compiler)
     else:
         compiler = shutil.which("compiler", path=source_folder)
         assert compiler is not None, "compiler not found in the source folder."
-        is_clang = False
 
     test_func: dict[str, Callable[[str, Test], TestResult]] = {
-        'lab0': partial(run_with_src, qemu=cfg.use_qemu, is_clang=is_clang),
+        'lab0': partial(run_with_src, qemu=cfg.use_qemu),
         'lab1': run_only_compiler,
         'lab2': run_only_compiler,
         'lab3': partial(run_with_ir, accipit=cfg.use_accipit),
