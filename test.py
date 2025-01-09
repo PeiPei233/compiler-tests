@@ -349,7 +349,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
         assert envs.rv32_gcc is not None, "riscv32-unknown-elf-gcc not found."
         assert envs.rv32_qemu is not None, "qemu-riscv32 not found."
 
-        return compile_run_result(envs.rv32_gcc, test, assembly_file_path, use_qemu=True, wrap_main=True)    
+        return compile_run_result(envs.rv32_gcc, test, assembly_file_path, use_qemu=True)    
     else:   # run with venus
         assert envs.java is not None, "java not found."
         assert os.path.exists(envs.venus_jar), f"{envs.venus_jar} not found."
