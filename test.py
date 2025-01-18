@@ -12,8 +12,8 @@ import re
 from enum import Enum, auto
 from dataclasses import dataclass, field
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import partial
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial, update_wrapper
 from typing import Any, Callable, TypeVar
 from difflib import unified_diff
 
@@ -217,7 +217,7 @@ def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., Te
                 return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
         # except Exception as e:
         #     return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
-    return wrapper
+    return update_wrapper(wrapper, func)
 
 @test_exception_handling
 def compile_run_result(compiler: str, test: Test, src_file_path: str, use_qemu: bool) -> TestResult:
@@ -591,7 +591,7 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
 
     if cfg.parallel:
         results: dict[int, TestResult] = {}
-        with ThreadPoolExecutor() as executor:
+        with ProcessPoolExecutor() as executor:
             future_to_index = {executor.submit(test_func[lab], compiler, test): i for i, test in enumerate(tests)}
             for future in as_completed(future_to_index):
                 index = future_to_index[future]
