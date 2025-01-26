@@ -563,8 +563,8 @@ def coverage(text, verbose=False):
         print(red('Parse Error'))
         print(e)
         exit(0)
-    print(green("Parse Success"))
     if verbose:
+        print(green("Parse Success"))
         print(text_tree.pretty())
     CoverageVisitor().visit_topdown(text_tree)
 
