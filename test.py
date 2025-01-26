@@ -105,19 +105,10 @@ class Test:
         for line in content:
             # get comment, start with //
             if line.strip().startswith("//"):
-                comments.append(line.strip()[2:])
+                comments.append(line.strip()[2:].strip())
             else:
                 break
-        if len(comments) == 0:  # no comment means success
-            return Test(filename, None, None, False)
-        elif len(comments) == 1:
-            if "Error" in comments[0]:  # should fail
-                return Test(filename, None, None, True)
-            else:
-                return Test(filename, None, None, False)
-        elif len(comments) == 2:  # input and output
-            assert "Input:" in comments[0], f"{filename} has non-paired input/output"
-            assert "Output:" in comments[1], f"{filename} has non-paired input/output"
+        if len(comments) >= 2 and comments[0].startswith("Input:") and comments[1].startswith("Output:"):   # input and output
             input = comments[0].replace("Input:", "").split()
             if input[0] == "None":
                 input = []
@@ -125,8 +116,10 @@ class Test:
             if expected[0] == "None":
                 expected = []
             return Test(filename, input, expected, False)
-        else:
-            assert False, f"{filename} heading comment is invalid"
+        elif len(comments) >= 1 and comments[0].startswith("Error:"):   # should fail
+            return Test(filename, None, None, True)
+        else:   # should success
+            return Test(filename, None, None, False)
 
     def __str__(self):
         return f"Test({self.filename}, {self.inputs}, {self.expected}, {self.should_fail})"
@@ -206,12 +199,12 @@ def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., Te
         # except AssertionError:
         #     raise
         except subprocess.TimeoutExpired as e:
-            if isinstance(e.cmd, list) and e.cmd[0] == compiler:
+            if e.cmd[0] == compiler:
                 return TestResult(test, result_type=ResultType.COMPILE_TIMEOUT, error=e)
             else:
                 return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
         except subprocess.CalledProcessError as e:
-            if isinstance(e.cmd, list) and e.cmd[0] == compiler:
+            if e.cmd[0] == compiler:
                 return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
             else:
                 return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
@@ -549,6 +542,9 @@ def summary(test_results: list[TestResult], source_folder: str):
     print(green("All tests passed!"))
     print()
 
+def init_worker(envs: EnvironmentConfig, cfg: TestConfig) -> None:
+    globals()['envs'] = envs
+    globals()['cfg'] = cfg
 
 def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
     print(box(f"Running {lab} test..."))
@@ -591,7 +587,7 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
 
     if cfg.parallel:
         results: dict[int, TestResult] = {}
-        with ProcessPoolExecutor() as executor:
+        with ProcessPoolExecutor(initializer=init_worker, initargs=(envs, cfg)) as executor:
             future_to_index = {executor.submit(test_func[lab], compiler, test): i for i, test in enumerate(tests)}
             for future in as_completed(future_to_index):
                 index = future_to_index[future]
