@@ -116,7 +116,7 @@ class Test:
             if expected[0] == "None":
                 expected = []
             return Test(filename, input, expected, False)
-        elif len(comments) >= 1 and comments[0].startswith("Error:"):   # should fail
+        elif len(comments) >= 1 and "Error" in comments[0]:   # should fail
             return Test(filename, None, None, True)
         else:   # should success
             return Test(filename, None, None, False)
