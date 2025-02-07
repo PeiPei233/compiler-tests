@@ -355,7 +355,11 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
             timeout=cfg.timeout,
             check=True
         )
-        output = result.stdout.strip().split("\n")[:-1]  # remove the last line "Exit with code {exit_code} within {run_step} steps."
+        print(result)
+        output = result.stdout.strip().split("\n")
+        # if the last line is "Exited with error code {exit_code}", remove it
+        if output[-1].startswith("E"):
+            output = output[:-1]
         output = [line.strip() for line in output if line.strip() != ""]
         result_step = subprocess.run(
             [envs.java, "-jar", envs.venus_jar, assembly_file_path, '-ahs', '-n', '-ms', '-1'],   # -n: only output step count
