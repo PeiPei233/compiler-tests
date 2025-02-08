@@ -358,7 +358,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
         print(result)
         output = result.stdout.strip().split("\n")
         # if the last line is "Exited with error code {exit_code}", remove it
-        if output[-1].startswith("E"):
+        if len(output) > 1 and output[-1].startswith("E"):
             output = output[:-1]
         output = [line.strip() for line in output if line.strip() != ""]
         result_step = subprocess.run(
