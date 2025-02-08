@@ -332,7 +332,7 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
     # compile to assembly
     assembly_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".S").name)
     subprocess.run(
-        [compiler, test.filename, assembly_file_path] + (['--qemu'] if qemu else []),  # add --qemu flag
+        [compiler, test.filename, assembly_file_path] + (['--venus'] if not qemu else []),  # add --venus flag
         capture_output=True,
         timeout=cfg.timeout,
         check=True
