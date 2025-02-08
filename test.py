@@ -355,7 +355,6 @@ def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
             timeout=cfg.timeout,
             check=True
         )
-        print(result)
         output = result.stdout.strip().split("\n")
         # if the last line is "Exited with error code {exit_code}", remove it
         if len(output) > 1 and output[-1].startswith("E"):
