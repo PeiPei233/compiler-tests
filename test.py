@@ -60,7 +60,7 @@ test_score = 0
 @dataclass
 class TestConfig:
     verbose: bool = False
-    use_qemu: bool = False
+    use_qemu: bool = True
     use_accipit: bool = False
     parallel: bool = True
     check_ssa: bool = False
