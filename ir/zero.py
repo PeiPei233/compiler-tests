@@ -25,6 +25,9 @@ class BinOp(Op):
     Rem = "%"
     Sll = "<<"  # 左移
     Sra = ">>"  # 算术右移
+    And = "&"
+    Or = "|"
+    Xor = "^"
 
 
 class RelOp(Op):
@@ -409,11 +412,14 @@ class ToIR(Transformer):
     def pos(self, _): return UnOp.Pos
     def sll(self, _): return BinOp.Sll
     def sra(self, _): return BinOp.Sra
+    def and_(self, _): return BinOp.And
+    def or_(self, _): return BinOp.Or
+    def xor(self, _): return BinOp.Xor
 
 # -------------------------------- Parser --------------------------------#
 
 
-parser = Lark("""
+parser = Lark(r"""
 start: instruction*
 
 ?instruction: "LABEL" NAME ":" -> label
@@ -454,15 +460,19 @@ start: instruction*
     | "%" -> rem
     | "<<" -> sll
     | ">>" -> sra
+    | "&" -> and_
+    | "|" -> or_
+    | "^" -> xor
 
 ?unop : "-" -> neg
     | "+" -> pos
     
-%import python.NAME
 %import common.SIGNED_INT
 %import common.WS
 %import common.CPP_COMMENT
 %import common.C_COMMENT
+
+NAME: /[a-zA-Z\.\-_][a-zA-Z0-9\.\-_]*/ 
 
 %ignore WS
 %ignore CPP_COMMENT
@@ -571,6 +581,9 @@ op2func = {
     BinOp.Rem: lambda x, y: x % y,
     BinOp.Sll: lambda x, y: x << y,  # 左移
     BinOp.Sra: lambda x, y: x >> y,  # 算术右移
+    BinOp.And: lambda x, y: x & y,
+    BinOp.Or: lambda x, y: x | y,
+    BinOp.Xor: lambda x, y: x ^ y,
     # relation op
     RelOp.Gt: lambda x, y: x > y,
     RelOp.Lt: lambda x, y: x < y,
