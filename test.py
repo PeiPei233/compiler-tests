@@ -679,15 +679,12 @@ if __name__ == "__main__":
         failed = True
     if not files:
         if lab == 'lab0':
-            print(f"[bold]Expected score: {test_score:.2f}[/bold]")
+            print(f"[bold]Test score: {test_score:.2f}[/bold]")
         else:
             if not (Path(repo_path) / "reports" / f"{lab}.pdf").exists():
                 print(red(f"Error: reports/{lab}.pdf not found."))
                 failed = True
-                report_score = 0
-            else:
-                report_score = 100
-            print(f"[bold]Expected score: {test_score*0.9+report_score*0.1:.2f}[/bold]")
+            print(f"[bold]Test score: {test_score:.2f}[/bold]")
     print(datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S %Z"))
     
     sys.exit(1 if failed else 0)
