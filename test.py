@@ -603,13 +603,14 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
     summary(test_results, source_folder)
 
     if not files and lab == 'lab0':
+        global test_score
+        test_score = 0
         # test coverage
         try:
             result = subprocess.run([envs.python, envs.coverage_py, *map(lambda x: x.filename, tests)], check=True)
             print(green(f"lab0 coverage test passed."))
         except:
             assert False, f"lab0 coverage test failed."
-        global test_score
         test_score = min(100, 100 * len(tests) / 5)
         assert len(tests) >= 5, "lab0 test cases are less than 5."
 
