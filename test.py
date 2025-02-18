@@ -592,11 +592,11 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
         results: dict[int, TestResult] = {}
         with ProcessPoolExecutor(initializer=init_worker, initargs=(envs, cfg)) as executor:
             future_to_index = {executor.submit(test_func[lab], compiler, test): i for i, test in enumerate(tests)}
-            for future in as_completed(future_to_index):
+            for future in track(as_completed(future_to_index), total=len(tests), description="Running tests", disable=not cfg.verbose):
                 index = future_to_index[future]
                 result = future.result()
                 results[index] = result
-        test_results = [results[i] for i in track(range(len(tests)), description="Running tests", disable=not cfg.verbose)]
+        test_results = [results[i] for i in range(len(tests))]
     else:
         test_results = [test_func[lab](compiler, test) for test in track(tests, description="Running tests", disable=not cfg.verbose)]
     
