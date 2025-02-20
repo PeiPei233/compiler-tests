@@ -1,0 +1,13 @@
+// Syntax Error in line 7 and line 11: first dimension can be omitted,
+// while subsequent dimensions must be specified.
+int main() {
+    return 0;
+}
+
+int f1(int array[][][2]) {
+    return 0;
+}
+
+int f2(int array[][2][]) {
+    return 0;
+}
