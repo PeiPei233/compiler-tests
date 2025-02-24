@@ -1,0 +1,5 @@
+int main() {
+    int main = 0;
+    int a = {main};
+    return a;
+}
