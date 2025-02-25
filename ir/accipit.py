@@ -3,6 +3,7 @@ from lark import Lark, Transformer, ast_utils, Token, UnexpectedInput
 from lark.ast_utils import Ast
 from dataclasses import dataclass
 from typing import Union, Any
+import random
 
 import sys
 import argparse
@@ -121,7 +122,8 @@ class Environment():
     def __init__(self):
         self.global_env: dict[str, Any] = {}
         self.frames: list[dict[str, Any]] = []
-        self.memory: list[int] = [0]*1024
+        self.memory: list[int] = [
+            random.randint(1, 0xffff) for _ in range(1024)]
         self.capacity: int = 1024
         self.size: int = 0
 
@@ -135,7 +137,8 @@ class Environment():
         if self.size + size > self.capacity:
             size_lacked = self.size + size - self.capacity
             size_to_extend = (size_lacked + 1023) // 1024 * 1024
-            self.memory.extend([0] * size_to_extend)
+            self.memory.extend([
+                random.randint(1, 0xffff) for _ in range(1024)])
             self.capacity += size_to_extend
         addr = self.size
         self.size += size
