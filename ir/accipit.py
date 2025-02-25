@@ -241,9 +241,10 @@ class Gep(IRNode):
     
     def eval(self) -> Ptr:
         addr = env.get(self.name).addr
+        p_addr = 0
         for idx, dim in self.offsets:
-            addr = addr * dim.eval() + idx.eval()
-        return Ptr(addr)
+            p_addr = p_addr * dim.eval() + idx.eval()
+        return Ptr(addr + p_addr)
     
 @dataclass
 class Fncall(IRNode):
