@@ -1,4 +1,4 @@
-// Semantic error at line 5: Invalid conversion from 'int (*)[2]' to 'int'
+// Semantic Error at line 5: Invalid conversion from 'int (*)[2]' to 'int'
 
 int main(){
     int a[3][2] = {};
