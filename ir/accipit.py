@@ -406,7 +406,10 @@ class GlobalDecl:
         if values and len(values) != size.eval():
             raise SemanticError(
                 f"Global array {name} has size {size} but {len(values)} values are provided.")
-        ptr = env.allocate(size.eval(), [value.eval() for value in values])
+        elif values:
+            ptr = env.allocate(size.eval(), [value.eval() for value in values])
+        else:
+            ptr = env.allocate(size.eval(), [0 for _ in range(size.eval())])
         env.add_global(name, ptr)
 
     def __str__(self):
