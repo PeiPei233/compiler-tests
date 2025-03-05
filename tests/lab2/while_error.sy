@@ -1,0 +1,18 @@
+// Semantic Error at Line 9: Array cannot be used as condition expression
+// Semantic Error at Line 12: Return with no value in function returning non-void
+// Semantic Error at Line 14: Invalid assignment between array types
+
+int main() {
+    int a = 5;
+    int arr[3];
+    
+    while (arr) {  
+        a = a - 1;
+        if (a == 3) {
+            return;  
+        }
+        arr[0] = arr;  
+    }
+    
+    return 0;
+}
