@@ -367,7 +367,7 @@ class BasicBlock(IRNode):
     insts: list[ValueBinding | Terminator]
 
     def __str__(self):
-        return f"{self.label}:\n" + "\n".join(str(binding) for binding in self.bindings) + f"\n{self.terminator}"
+        return f"{self.label}:\n" + "\n".join(str(inst) for inst in self.insts)
 
     def eval(self) -> int | UnitConst:
         for idx, inst in enumerate(self.insts):
