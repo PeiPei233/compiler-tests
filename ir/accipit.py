@@ -41,7 +41,7 @@ class IRNode():
                 print(f"{prefix} \033[1;36mSimp\033[0m   {self.reduced_msg}")
             if isinstance(self, ValueBinding):
                 print(
-                    f"{prefix} \033[1;33mBind\033[0m   {'Unit' if result is None else result} to {self.name}")
+                    f"{prefix} \033[1;33mBind   {'Unit' if result is None else result}\033[0m to {self.name}")
             if isinstance(self, FunDefn):
                 print(f"{prefix} \033[1;33mReturn {result}\033[0m for {name}")
             return result
