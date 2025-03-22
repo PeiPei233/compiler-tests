@@ -1,4 +1,4 @@
-// Syntax Error Line 3
+// Syntax Error Line 3: the first dimension of the array must be omitted
 
 int f(int array[2][2][2]) {
   int a = array[0][0];
