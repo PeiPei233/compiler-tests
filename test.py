@@ -548,13 +548,6 @@ def summary(test_results: list[TestResult], source_folder: str):
 
     print()
     print(table)
-
-    passed = len([test for test in test_results if test.result == ResultType.ACCEPTED])
-    print()
-    global test_score
-    test_score = 100 * passed / len(test_results)
-    assert passed == len(test_results), f"{passed}/{len(test_results)} tests passed."
-    print(green("All tests passed!"))
     print()
 
 def init_worker(envs: EnvironmentConfig, cfg: TestConfig) -> None:
@@ -614,9 +607,18 @@ def test_lab(source_folder: str, lab: str, files: list[str]) -> None:
     
     summary(test_results, source_folder)
 
-    if not files and lab == 'lab0':
-        global test_score
-        test_score = 0
+    if files:   # do not calculate score if files are provided
+        return
+
+    passed = len([test for test in test_results if test.result == ResultType.ACCEPTED])
+    global test_score
+    if lab != 'lab0':
+        test_score = 100 * passed / len(test_results)
+    assert passed == len(test_results), f"{passed}/{len(test_results)} tests passed."
+    print(green("All tests passed!"))
+    print()
+
+    if lab == 'lab0':
         # test coverage
         try:
             result = subprocess.run([envs.python, envs.coverage_py, *map(lambda x: x.filename, tests)], check=True)
