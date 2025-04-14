@@ -562,7 +562,7 @@ def coverage(text, verbose=False):
     except UnexpectedInput as e:
         print(red('Parse Error'))
         print(e)
-        exit(0)
+        exit(1)
     if verbose:
         print(green("Parse Success"))
         print(text_tree.pretty())
