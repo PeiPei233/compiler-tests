@@ -36,6 +36,7 @@ class EnvironmentConfig:
     test_dir: str = os.path.dirname(__file__)
     temp_dir: str = tempfile.mkdtemp()
     output_dir: str = temp_dir
+    random_filename: bool = True
     
     zero_ir_path: str = os.path.join(test_dir, "ir", "zero.py")
     accipit_ir_path: str = os.path.join(test_dir, "ir", "accipit.py")
@@ -192,6 +193,14 @@ def run_commands(commands: list[list[str]], *args: Any, **kwargs: Any) -> None:
     for command in commands:
         subprocess.run(command, capture_output=True, check=True, timeout=cfg.timeout, *args, **kwargs)
 
+def generate_temp_input_file(filename: str) -> str:
+    """Generate a temp file from the given file path."""
+    if not envs.random_filename:
+        return filename
+    input_file_path = tempfile.NamedTemporaryFile(dir=envs.output_dir, suffix=".sy", delete=False)
+    shutil.copy(filename, input_file_path.name)
+    return input_file_path.name
+
 def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., TestResult]:
     def wrapper(compiler: str, test: Test, *args: Any, **kwargs: Any) -> TestResult:
         try:
@@ -216,7 +225,7 @@ def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., Te
 def compile_run_result(compiler: str, test: Test, src_file_path: str, use_qemu: bool) -> TestResult:
     executable_file_path = os.path.join(
         envs.output_dir,
-        Path(test.filename).with_suffix(
+        Path(src_file_path).with_suffix(
             ".exe" if sys.platform.startswith("win") else ""
         ).name
     )
@@ -283,14 +292,16 @@ def run_with_src(compiler: str, test: Test, qemu: bool = False) -> TestResult:  
 @test_exception_handling
 def run_only_compiler(compiler: str, test: Test) -> TestResult:  # lab1, lab2
     assert test.inputs is None, "Not implemented input for lab1 or lab2"
-    subprocess.run([compiler, test.filename], capture_output=True, timeout=cfg.timeout, check=True)
+    src_file_path = generate_temp_input_file(test.filename)
+    subprocess.run([compiler, src_file_path], capture_output=True, timeout=cfg.timeout, check=True)
     return TestResult(test, result_type=ResultType.ACCEPTED)
 
 @test_exception_handling
 def run_with_ir(compiler: str, test: Test, accipit: bool) -> TestResult:  # lab3
+    src_file_path = generate_temp_input_file(test.filename)
     ir_file_path = os.path.join(
         envs.output_dir,
-        Path(test.filename).with_suffix(
+        Path(src_file_path).with_suffix(
             ".acc" if accipit else ".zir"
         ).name
     )
@@ -298,7 +309,7 @@ def run_with_ir(compiler: str, test: Test, accipit: bool) -> TestResult:  # lab3
     assert os.path.exists(ir_path), f"{ir_path} not found."
     assert test.expected is not None, f"{test.filename} has no expected output."
     result = subprocess.run(
-        [compiler, test.filename, ir_file_path, '--ir'],  # add --ir flag
+        [compiler, src_file_path, ir_file_path, '--ir'],
         capture_output=True,
         check=True,
         timeout=cfg.timeout)
@@ -329,10 +340,11 @@ def run_with_ir(compiler: str, test: Test, accipit: bool) -> TestResult:  # lab3
 def run_with_asm(compiler: str, test: Test, qemu: bool = False) -> TestResult:  # lab4
     assert test.expected is not None, f"{test.filename} has no expected output."
 
+    src_file_path = generate_temp_input_file(test.filename)
     # compile to assembly
-    assembly_file_path = os.path.join(envs.output_dir, Path(test.filename).with_suffix(".S").name)
+    assembly_file_path = os.path.join(envs.output_dir, Path(src_file_path).with_suffix(".S").name)
     subprocess.run(
-        [compiler, test.filename, assembly_file_path] + (['--venus'] if not qemu else []),  # add --venus flag
+        [compiler, src_file_path, assembly_file_path] + (['--venus'] if not qemu else []),  # add --venus flag
         capture_output=True,
         timeout=cfg.timeout,
         check=True
@@ -656,6 +668,9 @@ if __name__ == "__main__":
         if v is not None and hasattr(cfg, k):
             assert type(getattr(cfg, k)) == type(v), f"Type mismatch for {k}. Expected {type(getattr(cfg, k))}, got {type(v)}."
             setattr(cfg, k, v)
+
+    if files or args.output:
+        envs.random_filename = False
     
     if cfg.verbose:     # print configurations
         table = Table(show_header=False, box=None, highlight=True)
