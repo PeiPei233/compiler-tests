@@ -766,16 +766,22 @@ def build_function(irs: list[IRNode]) -> list[FunctionFrame]:
             global_var[ir.name] = ir.values
         elif isinstance(ir, Label):
             is_block_entry = True
+            if not frames:
+                raise SyntaxError("Cannot define instruction outside of a function.")
             frames[-1].add_code(ir)
         elif isinstance(ir, Phi):
             if not is_block_entry:
                 raise SyntaxError("Phi node should be the first instruction in a block.")
             if not is_ssa:
                 raise SyntaxError("Phi node is not in SSA form.")
+            if not frames:
+                raise SyntaxError("Cannot define instruction outside of a function.")
             frames[-1].add_code(ir)
             have_phi = True
         else:
             is_block_entry = False
+            if not frames:
+                raise SyntaxError("Cannot define instruction outside of a function.")
             frames[-1].add_code(ir)
     for name, values in global_var.items():
         address = Array.new(len(values) * 4)
