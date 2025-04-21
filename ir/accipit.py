@@ -563,7 +563,7 @@ class BaseTransformer(Transformer):
 accipit_grammar = """
     ?start : program
 
-    name : /[a-zA-Z.-_]/ /[a-zA-Z0-9.-_]/*
+    name : /[a-zA-Z._-][a-zA-Z0-9._-]*/
     ident : /@/ (name | INT)
     | /#/ (name | INT)
     | /%/ (name | INT)
