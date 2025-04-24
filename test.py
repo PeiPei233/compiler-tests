@@ -452,7 +452,7 @@ def summary(test_results: list[TestResult], source_folder: str):
             9: "NotCallable",
             10: "Undeclared",
             11: "Redefinition",
-            12: "ArrayInitNotList",
+            12: "InvalidInitializer",
             13: "ArgNumMismatch",
         }.get(return_code, "UnknownError")
 
