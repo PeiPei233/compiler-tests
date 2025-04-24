@@ -1,4 +1,4 @@
-// Syntax Error Line 8: identifier "3c"
+// Return 1 - Syntax Error Line 8: identifier "3c"
 
 int foo(int x){
   return x + 1;

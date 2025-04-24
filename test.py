@@ -97,7 +97,7 @@ class Test:
     filename: str
     inputs: list[str] | None
     expected: list[str] | None
-    should_fail: bool
+    should_return: int | None
 
     @staticmethod
     def parse_file(filename: str) -> "Test":
@@ -116,14 +116,16 @@ class Test:
             expected = comments[1].replace("Output:", "").split()
             if expected[0] == "None":
                 expected = []
-            return Test(filename, input, expected, False)
-        elif len(comments) >= 1 and "Error" in comments[0]:   # should fail
-            return Test(filename, None, None, True)
+            return Test(filename, input, expected, None)
+        elif len(comments) >= 1 and comments[0].startswith("Return"):
+            # Return 1 - Syntax Error: rvalue cannot be assigned to
+            match = re.search(r"Return (\d+)", comments[0])
+            return Test(filename, None, None, int(match.group(1)) if match else None)
         else:   # should success
-            return Test(filename, None, None, False)
+            return Test(filename, None, None, 0)
 
     def __str__(self):
-        return f"Test({self.filename}, {self.inputs}, {self.expected}, {self.should_fail})"
+        return f"Test({self.filename}, {self.inputs}, {self.expected}, {self.should_return})"
 
 class ResultType(Enum):
     ACCEPTED = auto()
@@ -145,15 +147,17 @@ class TestResult:
                  result_type: ResultType | None = None,
                  run_time: float | None = None,
                  run_time_type: TimeType = TimeType.STEPS,
-                 error: Exception | None = None
+                 error: Exception | None = None,
+                 return_code: int = 0,
     ) -> None:
         self.test = test
         self.output = output
         self.run_time = run_time
         self.run_time_type = run_time_type
         self.error = error
-        if test.should_fail:
-            self.result = ResultType.ACCEPTED if result_type == ResultType.COMPILE_ERROR else ResultType.WRONG_ANSWER
+        self.return_code = return_code
+        if test.should_return is not None:
+            self.result = ResultType.ACCEPTED if return_code == test.should_return else ResultType.WRONG_ANSWER
         else:
             if result_type is not None and result_type != ResultType.ACCEPTED:
                 self.result = result_type
@@ -214,9 +218,9 @@ def test_exception_handling(func: Callable[..., TestResult]) -> Callable[..., Te
                 return TestResult(test, result_type=ResultType.RUN_TIMEOUT, error=e)
         except subprocess.CalledProcessError as e:
             if e.cmd[0] == compiler:
-                return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e)
+                return TestResult(test, result_type=ResultType.COMPILE_ERROR, error=e, return_code=e.returncode)
             else:
-                return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
+                return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e, return_code=e.returncode)
         # except Exception as e:
         #     return TestResult(test, result_type=ResultType.RUNTIME_ERROR, error=e)
     return update_wrapper(wrapper, func)
@@ -433,6 +437,24 @@ def summary(test_results: list[TestResult], source_folder: str):
             [f"[dim]... {omitted} lines omitted ...[/dim]"] + \
             lines[-show_lines:]
         )
+        
+    def compiler_return_code_to_text(return_code: int) -> str:
+        return {
+            0: "CompilerSuccess",
+            1: "SyntaxError",
+            2: "NotAssignable",
+            3: "ExcessInitializers",
+            4: "IncompatibleConversion",
+            5: "InvalidOperands",
+            6: "NotSubscriptable",
+            7: "ReturnMismatch",
+            8: "NotIntegerSubscript",
+            9: "NotCallable",
+            10: "Undeclared",
+            11: "Redefinition",
+            12: "ArrayInitNotList",
+            13: "ArgNumMismatch",
+        }.get(return_code, "UnknownError")
 
     if cfg.verbose:
         for test_result in test_results:
@@ -445,10 +467,40 @@ def summary(test_results: list[TestResult], source_folder: str):
             if test_result.result == ResultType.WRONG_ANSWER:
                 body = []
 
-                if test_result.test.should_fail:
-                    body.append("[yellow]Expected to compile with error, but compiled successfully.[/yellow]")
+                if test_result.test.should_return is not None:
+                    table = Table(show_header=False, box=None, highlight=True)
+                    table.add_column(style="yellow italic", justify="right")
+                    table.add_column()
+                    if isinstance(test_result.error, subprocess.CalledProcessError):
+                        try:
+                            stdout = test_result.error.stdout.decode().strip() or "[dim]No stdout[/dim]"
+                        except:
+                            stdout = test_result.error.stdout or "[dim]No stdout[/dim]"
+                        try:
+                            stderr = test_result.error.stderr.decode().strip() or "[dim]No stderr[/dim]"
+                        except:
+                            stderr = test_result.error.stderr or "[dim]No stderr[/dim]"
+                            
+                        returncode = test_result.error.returncode
+                        if returncode and returncode < 0:
+                            try:
+                                return_text = f"{str(signal.Signals(-returncode))} ({returncode})"
+                            except ValueError:
+                                return_text = f"{returncode}"
+                        else:
+                            return_text = f"{returncode}"
+
+                        # Add stdout/stderr in a table
+                        table.add_row("command", str(test_result.error.cmd))
+                        table.add_row("expected return code", str(test_result.test.should_return) + f" ({compiler_return_code_to_text(test_result.test.should_return)})")
+                        table.add_row("got return code", str(test_result.return_code) + f" ({compiler_return_code_to_text(test_result.return_code)})")
+                        table.add_row("stdout", truncate_lines(stdout))
+                        table.add_row("stderr", truncate_lines(stderr))
+                    else:
+                        table.add_row("expected return code", str(test_result.test.should_return) + f" ({compiler_return_code_to_text(test_result.test.should_return)})")
+                        table.add_row("got return code", str(test_result.return_code) + f" ({compiler_return_code_to_text(test_result.return_code)})")
                     print()
-                    print(Panel(Group(*body), title=title, title_align='left', expand=True))
+                    print(Panel(table, title=title, title_align='left', expand=True, highlight=True))
                 else:
                     expected = test_result.test.expected or []
                     got = test_result.output or []

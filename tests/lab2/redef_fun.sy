@@ -1,4 +1,4 @@
-// Semantic Error: redefinition of function f
+// Return 11 Redefinition - Semantic Error: redefinition of function f
 
 void f() { return; }
 void f() { return; }

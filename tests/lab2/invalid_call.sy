@@ -1,4 +1,4 @@
-// Semantic Error: calling a non-function
+// Return 9 NotCallable - Semantic Error: calling a non-function
 
 int main() {
     int a = 0;

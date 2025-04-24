@@ -1,4 +1,4 @@
-// Syntax Error: rvalue cannot be assigned to
+// Return 1 - Syntax Error: rvalue cannot be assigned to
 
 int main() {
     int a = 5;

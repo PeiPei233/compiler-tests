@@ -1,8 +1,0 @@
-// Semantic Error at Line 7: can't found x.
-
-int main(){
-  {
-    int x = read();
-  }
-  write(x);
-}

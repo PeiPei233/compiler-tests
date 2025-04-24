@@ -1,4 +1,4 @@
-// Semantic Error: redefinition of variable a
+// Return 11 Redefinition - Semantic Error: redefinition of variable a
 int func(int a){
     int a;
     return 0;

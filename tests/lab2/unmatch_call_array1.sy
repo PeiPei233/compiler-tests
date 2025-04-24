@@ -1,4 +1,4 @@
-// Semantic Error at Line 12: Array dimensions not matched, cannot convert 'int (*)[2]' to 'int (*)[3]'
+// Return 4 IncompatibleConversion - Semantic Error at Line 12: Array dimensions not matched, cannot convert 'int (*)[2]' to 'int (*)[3]'
 int f(int a[][3])
 {
     a[2][2] = 1;

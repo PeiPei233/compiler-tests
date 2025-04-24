@@ -1,4 +1,4 @@
-// Semantic Error at Line 5: Array type is not assignable
+// Return 2 NotAssignable - Semantic Error at Line 5: Array type is not assignable
 
 int main(){
     int a[3][2] = {};
